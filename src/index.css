@@ -1,0 +1,159 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-display: 'Instrument Serif', ui-serif, Georgia, serif;
+    --color-lavender: var(--lavender);
+    --color-lavender-foreground: var(--lavender-foreground);
+    --color-forest: var(--forest);
+    --color-forest-foreground: var(--forest-foreground);
+    --shadow-hairline: var(--hairline);
+    --shadow-lift: var(--lift);
+    --font-sans: 'Geist Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Murmur theme — warm editorial canvas (after Wispr Flow's Hub) on a native macOS frame. */
+:root {
+    --background: #fbfaf6;
+    --foreground: #1b1a17;
+    --card: #ffffff;
+    --card-foreground: #1b1a17;
+    --popover: #ffffff;
+    --popover-foreground: #1b1a17;
+    --primary: #5b3fd0;
+    --primary-foreground: #ffffff;
+    --secondary: #f2efe8;
+    --secondary-foreground: #2b2924;
+    --muted: #f2efe8;
+    --muted-foreground: #78746a;
+    --accent: #efe8ff;
+    --accent-foreground: #3d2a99;
+    --destructive: #d23b2f;
+    --border: #e7e3d9;
+    --input: #e2ddd1;
+    --ring: #a996f5;
+    --radius: 0.875rem;
+    /* charts: one validated series colour (brand violet) */
+    --chart-1: #6d4fd8;
+    --chart-2: #eb6834;
+    --chart-3: #1baf7a;
+    --chart-4: #eda100;
+    --chart-5: #e87ba4;
+    /* brand surfaces */
+    --lavender: #efe3ff;
+    --lavender-foreground: #3d2a99;
+    --forest: #0d4f46;
+    --forest-foreground: #f4f1e6;
+    --sidebar: #f3f0e8;
+    --sidebar-foreground: #2b2924;
+    --sidebar-primary: #5b3fd0;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: rgba(91, 63, 208, 0.10);
+    --sidebar-accent-foreground: #3d2a99;
+    --sidebar-border: rgba(0, 0, 0, 0.08);
+    --sidebar-ring: #a996f5;
+    --hairline: 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+    --lift: 0 1px 2px rgba(27, 26, 23, 0.04), 0 4px 16px -6px rgba(27, 26, 23, 0.08);
+}
+
+.dark {
+    --background: #161512;
+    --foreground: #f3f1ea;
+    --card: #1f1e1b;
+    --card-foreground: #f3f1ea;
+    --popover: #24231f;
+    --popover-foreground: #f3f1ea;
+    --primary: #a996f5;
+    --primary-foreground: #1b1440;
+    --secondary: #2a2925;
+    --secondary-foreground: #e9e6dd;
+    --muted: #2a2925;
+    --muted-foreground: #a19d92;
+    --accent: #2e2850;
+    --accent-foreground: #d9d0ff;
+    --destructive: #f0786c;
+    --border: #302f2a;
+    --input: #3a3833;
+    --ring: #7b65e6;
+    --chart-1: #9085e9;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --lavender: #2b2450;
+    --lavender-foreground: #ddd3ff;
+    --forest: #123f39;
+    --forest-foreground: #e8f2ee;
+    --sidebar: #1b1a17;
+    --sidebar-foreground: #e9e6dd;
+    --sidebar-primary: #a996f5;
+    --sidebar-primary-foreground: #1b1440;
+    --sidebar-accent: rgba(169, 150, 245, 0.16);
+    --sidebar-accent-foreground: #e4dcff;
+    --sidebar-border: rgba(255, 255, 255, 0.07);
+    --sidebar-ring: #7b65e6;
+    --hairline: 0 0 0 0.5px rgba(255, 255, 255, 0.10);
+    --lift: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -10px rgba(0, 0, 0, 0.5);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans antialiased;
+    }
+  /* Inside the app the window is translucent so the sidebar gets native vibrancy. */
+  html.tauri, html.tauri body { background: transparent; }
+  /* Desktop app: text isn't selectable unless it's content. */
+  body { user-select: none; -webkit-user-select: none; cursor: default; }
+  input, textarea, [data-selectable] { user-select: text; -webkit-user-select: text; }
+}

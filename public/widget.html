@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Murmur</title>
+  <style>
+    :root {
+      --bg: rgba(18, 18, 22, 0.92);
+      --border: rgba(255, 255, 255, 0.10);
+      --fg: #f4f4f6;
+      --muted: #a1a1aa;
+      --accent: #a78bfa;
+      --accent-2: #f472b6;
+      --error: #f87171;
+      --ok: #4ade80;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--fg);
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+    body { display: flex; align-items: center; justify-content: center; }
+
+    .pill {
+      height: 44px;
+      min-width: 120px;
+      max-width: 228px;
+      padding: 0 16px;
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      opacity: 0; transform: translateY(6px) scale(0.96);
+      transition: opacity .16s ease, transform .16s ease, min-width .2s ease;
+    }
+    .pill.visible { opacity: 1; transform: none; }
+    .pill.compact { min-width: 44px; padding: 0 14px; justify-content: center; }
+
+    .dot {
+      flex: none; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 0 0 rgba(244, 114, 182, .6);
+      animation: pulse 1.4s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(244, 114, 182, .55); }
+      70% { box-shadow: 0 0 0 7px rgba(244, 114, 182, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(244, 114, 182, 0); }
+    }
+
+    canvas { flex: none; width: 140px; height: 26px; }
+
+    .label {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: var(--muted);
+    }
+    .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; min-width: 50px; }
+    .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s; }
+
+    .icon { flex: none; width: 16px; height: 16px; }
+    .hidden { display: none !important; }
+    .error .label { color: var(--error); }
+    .ok .label { color: var(--fg); }
+  </style>
+</head>
+<body>
+  <div class="pill" id="pill">
+    <span class="dot" id="dot"></span>
+    <canvas id="wave" width="280" height="52"></canvas>
+    <svg class="icon hidden" id="icon" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+    <span class="label hidden" id="label"></span>
+    <span class="bar hidden" id="bar"><i id="barFill"></i></span>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const pill = $("pill"), dot = $("dot"), wave = $("wave"), label = $("label"), bar = $("bar"), barFill = $("barFill"), icon = $("icon");
+    const ctx = wave.getContext("2d");
+
+    // --- Waveform -------------------------------------------------------------------
+    // "recording": bars follow live mic levels.
+    // "wave": while transcribing, bars ease from their last heights into a travelling
+    //         sine wave with a purple → pink colour sweep.
+    const BARS = 28, EASE_MS = 220;
+    const PURPLE = [167, 139, 250], PINK = [244, 114, 182];
+    let levels = new Array(BARS).fill(0);
+    let mode = "idle", raf = 0, waveStart = 0, waveFrom = levels.slice();
+
+    const mix = (a, b, t) => `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * t)).join(",")})`;
+
+    function frame(t) {
+      const w = wave.width, h = wave.height, gap = 3, bw = (w - gap * (BARS - 1)) / BARS;
+      ctx.clearRect(0, 0, w, h);
+      const blend = mode === "wave" ? Math.min(1, (t - waveStart) / EASE_MS) : 0;
+      for (let i = 0; i < BARS; i++) {
+        let v = levels[i], c = i / (BARS - 1);
+        if (mode === "wave") {
+          const target = 0.18 + 0.5 * (1 + Math.sin(t * 0.0065 - i * 0.42)) / 2;
+          v = waveFrom[i] * (1 - blend) + target * blend;
+          c = (1 + Math.sin(t * 0.004 - i * 0.28)) / 2;
+        }
+        const bh = Math.max(4, v * h);
+        ctx.fillStyle = mix(PURPLE, PINK, c);
+        ctx.beginPath();
+        ctx.roundRect(i * (bw + gap), (h - bh) / 2, bw, bh, bw / 2);
+        ctx.fill();
+      }
+      if (mode !== "idle") raf = requestAnimationFrame(frame);
+    }
+
+    function animate(next) {
+      cancelAnimationFrame(raf);
+      if (next === "wave" && mode !== "wave") {
+        waveFrom = levels.slice();
+        waveStart = performance.now();
+      }
+      if (next === "recording" && mode !== "recording") levels.fill(0);
+      mode = next;
+      if (mode !== "idle") raf = requestAnimationFrame(frame);
+    }
+
+    // Typical speech RMS is ~0.01–0.2; compress so quiet speech is still visible.
+    const toHeight = (rms) => Math.min(1, Math.sqrt(rms) * 2.4);
+
+    // --- State rendering -------------------------------------------------------------
+    const ICONS = {
+      ok: '<path d="M3 8.5l3 3 7-7" stroke="#4ade80"/>',
+      error: '<circle cx="8" cy="8" r="6.5" stroke="#f87171"/><path d="M8 4.8v3.6M8 11.2v.01" stroke="#f87171"/>',
+      clip: '<rect x="4" y="3" width="8" height="10.5" rx="1.5" stroke="#c4b5fd"/><path d="M6 3V2.2h4V3M6.3 7.5h3.4M6.3 10h3.4" stroke="#c4b5fd"/>',
+      lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5" stroke="#c4b5fd"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" stroke="#c4b5fd"/>',
+    };
+
+    function show(parts) {
+      dot.classList.toggle("hidden", !parts.dot);
+      wave.classList.toggle("hidden", !parts.wave);
+      label.classList.toggle("hidden", !parts.label);
+      bar.classList.toggle("hidden", parts.progress == null);
+      icon.classList.toggle("hidden", !parts.icon);
+      label.textContent = parts.label || "";
+      if (parts.icon) icon.innerHTML = ICONS[parts.icon];
+      if (parts.progress != null) barFill.style.width = `${Math.round(parts.progress * 100)}%`;
+      pill.className = "pill visible" + (parts.cls ? " " + parts.cls : "");
+    }
+
+    function setState({ state, message, progress }) {
+      switch (state) {
+        case "recording":
+          show({ dot: true, wave: true });
+          animate("recording");
+          break;
+        case "locked": // hands-free: keeps listening until the next Fn press
+          show({ icon: "lock", wave: true });
+          animate("recording");
+          break;
+        case "transcribing":
+          show({ wave: true });
+          animate("wave");
+          break;
+        case "done":
+          animate("idle");
+          show({ icon: "ok", cls: "ok compact" });
+          break;
+        case "copied": // no text field focused: text is on the clipboard instead
+          animate("idle");
+          show({ icon: "clip", label: "Copied — press ⌘V" });
+          break;
+        case "downloading":
+          animate("idle");
+          show({ label: message || "Downloading model…", progress: progress ?? 0 });
+          break;
+        case "ready":
+          animate("idle");
+          show({ icon: "ok", label: message || "Ready", cls: "ok" });
+          break;
+        case "error":
+          animate("idle");
+          show({ icon: "error", label: message || "Something went wrong", cls: "error" });
+          break;
+      }
+    }
+
+    const log = (m) => window.__TAURI__?.core?.invoke("widget_log", { message: String(m) }).catch(() => {});
+    window.addEventListener("error", (e) => log(`error: ${e.message}`));
+    const { listen } = window.__TAURI__.event;
+    listen("widget-state", (e) => {
+      try { setState(e.payload); } catch (err) { log(`setState failed: ${err}`); }
+    }).catch((err) => log(`listen failed: ${err}`));
+    listen("level", (e) => {
+      if (mode !== "recording") return;
+      levels.push(toHeight(e.payload));
+      levels.shift();
+    });
+  </script>
+</body>
+</html>
