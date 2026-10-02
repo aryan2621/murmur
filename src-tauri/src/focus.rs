@@ -12,7 +12,7 @@ pub enum Target {
     Murmur,
     /// Something that clearly can't take text (desktop, a list, a video, a page body).
     NotEditable { app: String, role: String },
-    /// Couldn't tell; paste as usual.
+    /// Couldn't tell; paste, but keep the text on the clipboard in case it landed nowhere.
     Unknown,
 }
 
@@ -111,6 +111,87 @@ pub fn detect() -> Target {
         mlog!("focus: app={bundle} role={} settable={} → {target:?}", role.as_deref().unwrap_or("none"), settable != 0);
         target
     }
+}
+
+/// Bundle id of the frontmost app ("" if unknown).
+pub fn frontmost_bundle() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .and_then(|a| a.bundleIdentifier())
+            .map(|b| b.to_string())
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    String::new()
+}
+
+/// Frame of the frontmost app's focused window in screen points (top-left origin):
+/// `(x, y, width, height)`. Used to show the widget on the window being dictated into.
+#[cfg(target_os = "macos")]
+pub fn active_window_frame() -> Option<(f64, f64, f64, f64)> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::string::{CFString, CFStringRef};
+    use objc2_app_kit::NSWorkspace;
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+    const AX_VALUE_CGPOINT: u32 = 1;
+    const AX_VALUE_CGSIZE: u32 = 2;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+        fn AXUIElementCopyAttributeValue(el: *const c_void, attr: CFStringRef, value: *mut *const c_void) -> i32;
+        fn AXUIElementSetMessagingTimeout(el: *const c_void, seconds: f32) -> i32;
+        fn AXValueGetValue(value: *const c_void, kind: u32, out: *mut c_void) -> bool;
+    }
+
+    unsafe fn copy_attr(el: *const c_void, name: &'static str) -> Option<CFType> {
+        let mut v: *const c_void = std::ptr::null();
+        let err = AXUIElementCopyAttributeValue(el, CFString::from_static_string(name).as_concrete_TypeRef(), &mut v);
+        (err == 0 && !v.is_null()).then(|| CFType::wrap_under_create_rule(v as _))
+    }
+
+    let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    unsafe {
+        let app = AXUIElementCreateApplication(front.processIdentifier());
+        if app.is_null() {
+            return None;
+        }
+        let _app = CFType::wrap_under_create_rule(app as _);
+        AXUIElementSetMessagingTimeout(app, 0.25);
+        let window = copy_attr(app, "AXFocusedWindow").or_else(|| copy_attr(app, "AXMainWindow"))?;
+        let pos = copy_attr(window.as_CFTypeRef(), "AXPosition")?;
+        let size = copy_attr(window.as_CFTypeRef(), "AXSize")?;
+        let (mut p, mut s) = (CGPoint::default(), CGSize::default());
+        if !AXValueGetValue(pos.as_CFTypeRef(), AX_VALUE_CGPOINT, &mut p as *mut _ as *mut c_void)
+            || !AXValueGetValue(size.as_CFTypeRef(), AX_VALUE_CGSIZE, &mut s as *mut _ as *mut c_void)
+            || s.width < 1.0
+            || s.height < 1.0
+        {
+            return None;
+        }
+        Some((p.x, p.y, s.width, s.height))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn active_window_frame() -> Option<(f64, f64, f64, f64)> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]

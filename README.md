@@ -4,7 +4,7 @@ Private, on-device voice dictation for macOS (Windows support in progress).
 Hold **Fn**, speak, release: your words are typed into whatever app has focus.
 Speech is transcribed locally with Whisper (whisper.cpp + Metal). Nothing leaves your machine.
 
-See [PLAN.md](PLAN.md) for architecture and roadmap.
+
 
 ## Install (macOS)
 

@@ -152,8 +152,17 @@ impl Core {
             mlog!("widget: window not found");
             return;
         };
+        let before = focus::frontmost_bundle();
         place_widget(&self.app, &w);
         show_without_focus(&w);
+        // Diagnostics: showing the widget must never change which app (or Space) is in front.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let after = focus::frontmost_bundle();
+            if after != before {
+                mlog!("widget: front app changed from {before} to {after} while showing");
+            }
+        });
     }
 
     fn play(&self, sound: &str) {
@@ -347,9 +356,16 @@ impl Core {
                 self.emit("copied", None, None);
                 Duration::from_millis(2200)
             }
-            focus::Target::Editable | focus::Target::Unknown => {
-                // Trailing space so consecutive dictations flow naturally.
+            // A text field: type it there (trailing space so dictations flow together).
+            focus::Target::Editable => {
                 paste::insert(&format!("{text} "), cfg.restore_clipboard)?;
+                self.emit("done", None, None);
+                quick
+            }
+            // Can't tell if anything will take the text: paste anyway, but keep it on the
+            // clipboard so it is never lost.
+            focus::Target::Unknown => {
+                paste::insert(&format!("{text} "), false)?;
                 self.emit("done", None, None);
                 quick
             }
@@ -419,9 +435,27 @@ impl Core {
 
     /// Keeps retrying until the OS grants keyboard-listening permission.
     fn start_hotkey(self: &Arc<Self>) {
+        // Presses are handled on a worker thread so the key tap's callback returns immediately;
+        // macOS disables taps whose callbacks are slow (starting the mic takes a moment).
+        let (tx, rx) = std::sync::mpsc::channel::<HotkeyEvent>();
+        let worker = self.clone();
+        std::thread::spawn(move || {
+            for ev in rx {
+                worker.on_hotkey(ev);
+            }
+        });
         loop {
             let core = self.clone();
-            match hotkey::start(&self.cfg().hotkey, Box::new(move |ev| core.on_hotkey(ev))) {
+            let tx = tx.clone();
+            let handler = Box::new(move |ev: HotkeyEvent| match ev {
+                // Esc needs an answer (swallow or not), and the check is instant.
+                HotkeyEvent::Escape => core.on_hotkey(ev),
+                _ => {
+                    let _ = tx.send(ev);
+                    false
+                }
+            });
+            match hotkey::start(&self.cfg().hotkey, handler) {
                 Ok(()) => return,
                 Err(e) => {
                     mlog!("hotkey: {e}");
@@ -446,14 +480,26 @@ fn key_label(key: &str) -> &str {
     }
 }
 
-/// Bottom-centre of the monitor the cursor is on.
+/// Bottom-centre of the window being dictated into, so the widget shows up where you're
+/// looking. Falls back to the screen under the mouse when the window can't be found.
 fn place_widget(app: &AppHandle, win: &WebviewWindow) {
+    const MARGIN: f64 = 24.0;
+    let (Ok(size), Ok(scale)) = (win.outer_size(), win.scale_factor()) else { return };
+    let (w, h) = (size.width as f64 / scale, size.height as f64 / scale);
+
+    if let Some((x, y, fw, fh)) = focus::active_window_frame() {
+        // Short windows (e.g. a one-line palette): sit just below them instead of covering them.
+        let top = if fh > h + MARGIN * 3.0 { y + fh - h - MARGIN } else { y + fh + 8.0 };
+        let _ = win.set_position(tauri::LogicalPosition::new(x + (fw - w) / 2.0, top));
+        return;
+    }
+
     let monitor = app
         .cursor_position()
         .ok()
         .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
-    let (Some(m), Ok(size)) = (monitor, win.outer_size()) else {
+    let Some(m) = monitor else {
         mlog!("widget: no monitor found to place it on");
         return;
     };
@@ -587,6 +633,12 @@ fn open_main_window(app: &AppHandle, tab: Option<&str>) {
                     let _ = &handle;
                 }
             });
+            // Follow the user to their current Space instead of pulling them to this window's.
+            #[cfg(target_os = "macos")]
+            if let Ok(ns) = w.ns_window() {
+                let ns = ns as usize;
+                let _ = w.run_on_main_thread(move || unsafe { move_to_active_space(ns as *mut std::ffi::c_void) });
+            }
             let _ = w.set_focus();
         }
         Err(e) => mlog!("could not open main window: {e}"),
@@ -595,6 +647,17 @@ fn open_main_window(app: &AppHandle, tab: Option<&str>) {
 
 /// Opens a file or folder in its default app (Finder for folders). Failures are logged and
 /// returned instead of silently ignored.
+/// Adds NSWindowCollectionBehaviorMoveToActiveSpace to a window.
+#[cfg(target_os = "macos")]
+unsafe fn move_to_active_space(ns_window: *mut std::ffi::c_void) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    const MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
+    let window = &*(ns_window as *mut AnyObject);
+    let current: usize = msg_send![window, collectionBehavior];
+    let _: () = msg_send![window, setCollectionBehavior: current | MOVE_TO_ACTIVE_SPACE];
+}
+
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let cmd = "open";
@@ -740,10 +803,12 @@ pub fn run() {
             }
 
             // Debug aid: `MURMUR_DEMO=1` cycles the widget through recording → transcribing → done.
-            if std::env::var_os("MURMUR_DEMO").is_some() {
+            // `MURMUR_DEMO=<seconds>` waits that long first (default 2).
+            if let Some(delay) = std::env::var("MURMUR_DEMO").ok() {
+                let delay = delay.parse::<u64>().unwrap_or(2);
                 let c = core.clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(Duration::from_secs(delay));
                     c.emit("recording", None, None);
                     c.show_widget();
                     for i in 0..90 {

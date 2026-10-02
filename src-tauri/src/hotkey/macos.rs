@@ -19,6 +19,7 @@ type TapCallback = extern "C" fn(proxy: Ptr, etype: u32, event: Ptr, user: Ptr) 
 extern "C" {
     fn CGEventTapCreate(tap: u32, place: u32, options: u32, mask: u64, cb: TapCallback, user: Ptr) -> Ptr;
     fn CGEventTapEnable(tap: Ptr, enable: bool);
+    fn CGEventTapIsEnabled(tap: Ptr) -> bool;
     fn CGEventGetFlags(event: Ptr) -> u64;
     fn CGEventGetIntegerValueField(event: Ptr, field: u32) -> i64;
     fn CGRequestListenEventAccess() -> bool;
@@ -151,6 +152,16 @@ pub fn start(key: &str, handler: Handler) -> Result<()> {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
         let _ = tx.send(Ok(()));
+        // Watchdog: macOS can switch a tap off (e.g. after a slow callback) without us noticing.
+        let tap_addr = tap as usize;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let tap = tap_addr as Ptr;
+            if !CGEventTapIsEnabled(tap) {
+                mlog!("key tap was disabled by macOS; re-enabling");
+                CGEventTapEnable(tap, true);
+            }
+        });
         CFRunLoopRun();
     })?;
 
