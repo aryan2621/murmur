@@ -35,14 +35,23 @@ let config: Config = {
   hotkey: "fn", model: "large-v3-turbo-q5_0", language: "en", translate: false, input_device: null,
   vocabulary: ["Acme Corp", "Kubernetes"], replacements: [{ from: "acme corp", to: "Acme Corp" }], remove_fillers: true,
   restore_clipboard: true, save_history: true, sounds: true, unload_after_minutes: 0,
+  // `?setup` in the URL previews the first-run setup (`?setup=2` opens a step).
+  setup_done: !new URLSearchParams(location.search).has("setup"),
 };
+const mockStep = new URLSearchParams(location.search).get("setup");
+if (mockStep) localStorage.setItem("murmur.setupStep", mockStep);
+// `?setup&fresh` shows the speech model step before anything is downloaded.
+const fresh = new URLSearchParams(location.search).has("fresh");
 
 const state = (): AppState => ({
-  config, status: "Ready — hold Fn to dictate", model_loaded: true,
-  permissions: { accessibility: true, microphone: "granted" },
+  config, status: fresh ? "Finish setup to download the speech model" : "Ready — hold Fn to dictate", model_loaded: !fresh,
+  // `?setup=2&fresh&dl=0.4` previews the download progress bar.
+  model_progress: new URLSearchParams(location.search).has("dl") ? Number(new URLSearchParams(location.search).get("dl")) : null,
+  permissions: fresh ? { accessibility: true, microphone: "not_asked" } : { accessibility: true, microphone: "granted" },
   models: [
-    { id: "large-v3-turbo-q5_0", label: "Large v3 Turbo", size_mb: 547, note: "Recommended: best accuracy for its speed.", downloaded: true },
+    { id: "large-v3-turbo-q5_0", label: "Large v3 Turbo", size_mb: 547, note: "Recommended: best accuracy for its speed.", downloaded: !fresh },
     { id: "small", label: "Small (multilingual)", size_mb: 466, note: "Fast; good for Hindi and translate.", downloaded: false },
+    { id: "base.en", label: "Base (English)", size_mb: 142, note: "Very fast, less accurate.", downloaded: false },
   ],
   devices: ["MacBook Pro Microphone", "AirPods Pro"],
   hotkeys: [{ id: "fn", label: "Fn / 🌐" }, { id: "right_option", label: "Right Option ⌥" }],
@@ -70,6 +79,7 @@ const handlers: Record<string, (a: any) => unknown> = {
   get_notes: () => notes,
   save_notes: (a) => void (notes = a.text),
   set_login: (a) => a.enabled,
+  finish_setup: () => void (config = { ...config, setup_done: true }),
   "plugin:event|listen": () => Math.floor(Math.random() * 1e6),
   "plugin:event|unlisten": () => null,
 };

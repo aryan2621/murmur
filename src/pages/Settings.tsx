@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, AudioLines, FolderOpen, Info, Keyboard, Mic, Plus, RefreshCw, ShieldCheck, Sparkles, Type, X, type LucideIcon } from "lucide-react";
+import { ArrowRight, AudioLines, FolderOpen, Info, Keyboard, Mic, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,7 +46,7 @@ function Section({ icon, tint, title, children }: { icon: LucideIcon; tint: stri
 
 const formatSize = (mb: number) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`);
 
-export default function Settings({ app }: { app: ReturnType<typeof useAppState> }) {
+export default function Settings({ app, onRunSetup }: { app: ReturnType<typeof useAppState>; onRunSetup: () => void }) {
   const { state, setState, refresh } = app;
   const [vocab, setVocab] = useState("");
   const [repl, setRepl] = useState<Replacement[]>([]);
@@ -236,6 +236,11 @@ export default function Settings({ app }: { app: ReturnType<typeof useAppState> 
       </Section>
 
       <Section icon={Info} tint="bg-stone-500" title="About">
+        <Row title="Setup" description="Walk through permissions, the speech model and a test dictation again.">
+          <Button variant="outline" size="sm" onClick={onRunSetup}>
+            <RotateCcw /> Run setup again
+          </Button>
+        </Row>
         <Row title={`Murmur ${state.version}`} description={<span data-selectable>{state.data_dir}</span>}>
           <Button variant="outline" size="sm" onClick={() => api.openDataFolder().catch((e) => toast.error(`Couldn't open the folder: ${e}`))}>
             <FolderOpen /> Show data folder

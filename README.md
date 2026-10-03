@@ -15,8 +15,9 @@ cp -R src-tauri/target/release/bundle/macos/Murmur.app /Applications/
 open /Applications/Murmur.app
 ```
 
-First launch downloads the speech model (~550 MB, one time) to
-`~/Library/Application Support/Murmur/models/`.
+First launch opens a short setup: allow Accessibility and Microphone, download the speech model
+(~550 MB by default, one time, to `~/Library/Application Support/Murmur/models/`), and try a first
+dictation. Run it again any time from **Settings → About → Run setup again**.
 
 ### One-time macOS setup
 1. Grant Murmur these in **System Settings → Privacy & Security**:

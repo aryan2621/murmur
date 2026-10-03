@@ -43,6 +43,8 @@ pub struct AppState {
     config: Config,
     status: String,
     model_loaded: bool,
+    /// Download progress (0–1) while the speech model is downloading.
+    model_progress: Option<f32>,
     permissions: Permissions,
     models: Vec<ModelInfo>,
     devices: Vec<String>,
@@ -84,6 +86,7 @@ pub fn get_state(app: AppHandle, core: State<'_, Arc<Core>>) -> AppState {
     AppState {
         status: core.status.lock().unwrap().clone(),
         model_loaded: core.transcriber.lock().unwrap().is_some(),
+        model_progress: *core.download.lock().unwrap(),
         permissions: Permissions { accessibility: paste::has_permission(false), microphone: microphone_status() },
         models: MODELS
             .iter()
@@ -225,4 +228,56 @@ pub fn get_notes() -> String {
 #[tauri::command]
 pub fn save_notes(text: String) -> Result<(), String> {
     std::fs::write(notes_path(), text).map_err(|e| e.to_string())
+}
+
+/// Setup: makes macOS ask for microphone access (does nothing once it's been answered; if it
+/// was denied, setup offers System Settings instead).
+#[tauri::command]
+pub fn request_microphone() {
+    #[cfg(target_os = "macos")]
+    request_microphone_access();
+}
+
+/// Setup's download step: saves the chosen model and downloads/loads it in the background.
+/// Progress arrives as `model-progress` events.
+#[tauri::command]
+pub fn download_model(core: State<'_, Arc<Core>>, model: String) -> Result<(), String> {
+    let mut cfg = core.cfg();
+    cfg.model = model;
+    config::save(&cfg).map_err(|e| e.to_string())?;
+    *core.cfg.write().unwrap() = cfg;
+    let core = core.inner().clone();
+    std::thread::spawn(move || core.load_model());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn finish_setup(core: State<'_, Arc<Core>>) -> Result<(), String> {
+    let mut cfg = core.cfg();
+    cfg.setup_done = true;
+    config::save(&cfg).map_err(|e| e.to_string())?;
+    *core.cfg.write().unwrap() = cfg;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+/// Asks macOS for microphone access through AVFoundation, the same API the status is read from,
+/// so the app sees the answer straight away (opening the mic via Core Audio also triggers the
+/// prompt, but the status only updates after a restart). Shows the system prompt the first time.
+fn request_microphone_access() {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, Bool};
+    use objc2_foundation::NSString;
+
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {}
+
+    let Some(class) = AnyClass::get(c"AVCaptureDevice") else { return };
+    // AVMediaTypeAudio
+    let media = NSString::from_str("soun");
+    let handler = RcBlock::new(|granted: Bool| mlog!("microphone access {}", if granted.as_bool() { "granted" } else { "denied" }));
+    unsafe {
+        let _: () = msg_send![class, requestAccessForMediaType: &*media, completionHandler: &*handler];
+    }
 }

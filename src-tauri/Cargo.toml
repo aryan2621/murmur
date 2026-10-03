@@ -30,6 +30,7 @@ whisper-rs = { version = "0.16", features = ["metal"] }
 core-foundation = "0.10"
 tauri-nspanel = "2.1"
 objc2 = "0.6"
+block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString"] }
 

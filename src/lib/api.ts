@@ -20,6 +20,7 @@ export interface Config {
   save_history: boolean;
   sounds: boolean;
   unload_after_minutes: number;
+  setup_done: boolean;
 }
 
 export interface ModelInfo {
@@ -34,6 +35,8 @@ export interface AppState {
   config: Config;
   status: string;
   model_loaded: boolean;
+  /** 0–1 while the speech model downloads, otherwise null. */
+  model_progress: number | null;
   permissions: { accessibility: boolean; microphone: "granted" | "denied" | "not_asked" | "unknown" };
   models: ModelInfo[];
   devices: string[];
@@ -74,6 +77,9 @@ export const api = {
   openDataFolder: () => invoke<void>("open_data_folder"),
   notes: () => invoke<string>("get_notes"),
   saveNotes: (text: string) => invoke<void>("save_notes", { text }),
+  requestMicrophone: () => invoke<void>("request_microphone"),
+  downloadModel: (model: string) => invoke<void>("download_model", { model }),
+  finishSetup: () => invoke<void>("finish_setup"),
 };
 
 export const events = {
@@ -81,6 +87,7 @@ export const events = {
   historyUpdated: (cb: () => void) => listen("history-updated", () => cb()),
   navigate: (cb: (tab: string) => void) => listen<string>("navigate", (e) => cb(e.payload)),
   dictation: (cb: (text: string) => void) => listen<string>("dictation", (e) => cb(e.payload)),
+  modelProgress: (cb: (progress: number | null) => void) => listen<number | null>("model-progress", (e) => cb(e.payload)),
 };
 
 export const wordCount = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);

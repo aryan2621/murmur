@@ -75,6 +75,8 @@ struct Core {
     /// Serialises model loads so a press during an idle reload doesn't load it twice.
     load_lock: Mutex<()>,
     last_used: Mutex<Instant>,
+    /// Speech model download progress (0–1) while one is running.
+    download: Mutex<Option<f32>>,
 }
 
 impl Core {
@@ -401,7 +403,9 @@ impl Core {
             let pct = if total > 0 { done as f32 / total as f32 } else { 0.0 };
             self.set_status(&format!("Downloading model… {:.0}%", pct * 100.0));
             self.emit("downloading", Some(format!("Downloading model {:.0}%", pct * 100.0)), Some(pct));
+            self.set_download(Some(pct));
         });
+        self.set_download(None);
         let path = match path {
             Ok(p) => p,
             Err(e) => {
@@ -431,6 +435,12 @@ impl Core {
                 self.fail(&format!("Model load failed: {e}"));
             }
         }
+    }
+
+    /// Download progress for the app window (setup shows it as a progress bar).
+    fn set_download(&self, progress: Option<f32>) {
+        *self.download.lock().unwrap() = progress;
+        let _ = self.app.emit_to("main", "model-progress", progress);
     }
 
     /// Keeps retrying until the OS grants keyboard-listening permission.
@@ -716,6 +726,9 @@ pub fn run() {
             commands::open_data_folder,
             commands::get_notes,
             commands::save_notes,
+            commands::request_microphone,
+            commands::download_model,
+            commands::finish_setup,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -723,6 +736,10 @@ pub fn run() {
 
             let first_run = !config::config_path().exists();
             let cfg = config::load();
+            let setup_done = cfg.setup_done;
+            // On a fresh install the speech model is downloaded from the setup flow, where the
+            // user can pick a smaller one first, instead of silently in the background.
+            let wait_for_setup = !setup_done && !model::model_path(&config::data_dir(), &cfg.model).exists();
             #[cfg(target_os = "macos")]
             fn_key::sync(&cfg.hotkey);
 
@@ -785,6 +802,7 @@ pub fn run() {
                 status: Mutex::new("Starting…".into()),
                 load_lock: Mutex::new(()),
                 last_used: Mutex::new(Instant::now()),
+                download: Mutex::new(None),
             });
 
             let trusted = paste::has_permission(true);
@@ -825,8 +843,12 @@ pub fn run() {
                 });
             }
 
-            let c = core.clone();
-            std::thread::spawn(move || c.load_model());
+            if wait_for_setup {
+                core.set_status("Finish setup to download the speech model");
+            } else {
+                let c = core.clone();
+                std::thread::spawn(move || c.load_model());
+            }
             let c = core.clone();
             std::thread::spawn(move || c.start_hotkey());
             let c = core.clone();
@@ -835,7 +857,7 @@ pub fn run() {
             // Onboarding: show the app window on first run or while a permission is missing.
             // Debug aid: `open --env MURMUR_TAB=insights Murmur.app` opens straight onto a page.
             let debug_tab = std::env::var("MURMUR_TAB").ok();
-            if first_run || !trusted || debug_tab.is_some() {
+            if first_run || !trusted || !setup_done || debug_tab.is_some() {
                 open_main_window(app.handle(), Some(debug_tab.as_deref().unwrap_or("home")));
             }
             Ok(())

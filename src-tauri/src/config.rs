@@ -31,6 +31,8 @@ pub struct Config {
     pub sounds: bool,
     /// Free the model's memory after this many idle minutes (0 = keep loaded).
     pub unload_after_minutes: u32,
+    /// The first-run setup has been completed (or skipped to the end).
+    pub setup_done: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +56,7 @@ impl Default for Config {
             save_history: true,
             sounds: true,
             unload_after_minutes: 0,
+            setup_done: false,
         }
     }
 }
