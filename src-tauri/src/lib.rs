@@ -598,7 +598,8 @@ fn hide_widget(win: &WebviewWindow) {
 }
 
 /// Opens (or focuses) the main window, optionally on a given tab ("home", "history", "settings").
-/// While it is open Murmur shows a Dock icon so it can be ⌘-Tabbed to like a normal app.
+/// Murmur stays a menu-bar app (no Dock icon) even while this window is open: macOS only lets
+/// a menu-bar app's floating widget appear on other apps' full-screen Spaces.
 fn open_main_window(app: &AppHandle, tab: Option<&str>) {
     if let Some(w) = app.get_webview_window("main") {
         if let Some(tab) = tab {
@@ -609,8 +610,6 @@ fn open_main_window(app: &AppHandle, tab: Option<&str>) {
         let _ = w.set_focus();
         return;
     }
-    #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     let url = format!("app.html#{}", tab.unwrap_or("home"));
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(url.into()))
         .title("Murmur")
@@ -634,15 +633,6 @@ fn open_main_window(app: &AppHandle, tab: Option<&str>) {
     let built = builder.build();
     match built {
         Ok(w) => {
-            let handle = app.clone();
-            w.on_window_event(move |event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    #[cfg(target_os = "macos")]
-                    let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    #[cfg(not(target_os = "macos"))]
-                    let _ = &handle;
-                }
-            });
             // Follow the user to their current Space instead of pulling them to this window's.
             #[cfg(target_os = "macos")]
             if let Ok(ns) = w.ns_window() {
