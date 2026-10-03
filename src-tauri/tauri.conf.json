@@ -26,6 +26,7 @@
         "visible": false,
         "focus": false,
         "focusable": false,
+        "acceptFirstMouse": true,
         "shadow": false,
         "visibleOnAllWorkspaces": true
       }

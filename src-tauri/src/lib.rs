@@ -16,6 +16,7 @@ mod hotkey;
 mod model;
 mod paste;
 mod transcribe;
+mod widget_drag;
 
 use audio::Recorder;
 use config::Config;
@@ -145,6 +146,13 @@ impl Core {
         *self.phase.lock().unwrap() = p;
     }
 
+    /// Murmur's app window is open and has keyboard focus, so its page can take dictation.
+    fn main_window_focused(&self) -> bool {
+        self.app
+            .get_webview_window("main")
+            .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
+    }
+
     fn emit(&self, state: &str, message: Option<String>, progress: Option<f32>) {
         let _ = self.app.emit_to("widget", "widget-state", WidgetState { state, message, progress });
     }
@@ -155,7 +163,9 @@ impl Core {
             return;
         };
         let before = focus::frontmost_bundle();
-        place_widget(&self.app, &w);
+        if !widget_drag::dragging(&self.app) {
+            place_widget(&self.app, &w);
+        }
         show_without_focus(&w);
         // Diagnostics: showing the widget must never change which app (or Space) is in front.
         std::thread::spawn(move || {
@@ -345,18 +355,21 @@ impl Core {
         if text.is_empty() {
             return Ok(Duration::ZERO);
         }
+        let copied = Duration::from_millis(2200);
         let hide_after = match focus::detect() {
             // Murmur's own window: the page puts it in the focused field or the scratchpad.
-            focus::Target::Murmur => {
+            focus::Target::Murmur if self.main_window_focused() => {
                 let _ = self.app.emit_to("main", "dictation", &text);
                 self.emit("done", None, None);
                 quick
             }
-            // Nowhere to type: leave it on the clipboard and say so instead of a false ✓.
-            focus::Target::NotEditable { .. } => {
+            // Murmur is in front with no window of its own (a menu-bar app stays in front after
+            // its window closes), or nothing can take text: keep it on the clipboard and say so
+            // instead of a false ✓.
+            focus::Target::Murmur | focus::Target::NotEditable { .. } => {
                 paste::copy(&text)?;
                 self.emit("copied", None, None);
-                Duration::from_millis(2200)
+                copied
             }
             // A text field: type it there (trailing space so dictations flow together).
             focus::Target::Editable => {
@@ -368,8 +381,8 @@ impl Core {
             // clipboard so it is never lost.
             focus::Target::Unknown => {
                 paste::insert(&format!("{text} "), false)?;
-                self.emit("done", None, None);
-                quick
+                self.emit("pasted", None, None);
+                copied
             }
         };
         *self.last_text.lock().unwrap() = Some(text.clone());
@@ -492,7 +505,12 @@ fn key_label(key: &str) -> &str {
 
 /// Bottom-centre of the window being dictated into, so the widget shows up where you're
 /// looking. Falls back to the screen under the mouse when the window can't be found.
+/// A spot the user dragged it to wins over both.
 fn place_widget(app: &AppHandle, win: &WebviewWindow) {
+    if let Some(p) = widget_drag::pinned(app) {
+        let _ = win.set_position(p);
+        return;
+    }
     const MARGIN: f64 = 24.0;
     let (Ok(size), Ok(scale)) = (win.outer_size(), win.scale_factor()) else { return };
     let (w, h) = (size.width as f64 / scale, size.height as f64 / scale);
@@ -553,6 +571,7 @@ mod panel {
         if let Err(e) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
             mlog!("widget: could not make panel non-activating: {e}");
         }
+        // Click-through until the mouse is over what the widget shows (see widget_drag).
         panel.set_ignores_mouse_events(true);
         Ok(())
     }
@@ -704,6 +723,8 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             widget_log,
+            widget_drag::widget_hit_rects,
+            widget_drag::widget_drag,
             commands::get_state,
             commands::save_config,
             commands::history_list,
@@ -738,13 +759,14 @@ pub fn run() {
             let open_item = MenuItem::with_id(app, "open", "Open Murmur…", true, Some("CmdOrCtrl+,"))?;
             let history_item = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
             let copy_last = MenuItem::with_id(app, "copy_last", "Copy Last Dictation", true, None::<&str>)?;
+            let reset_widget = MenuItem::with_id(app, "reset_widget", "Reset Widget Position", true, None::<&str>)?;
             let login_enabled = app.autolaunch().is_enabled().unwrap_or(false);
             let login_item = CheckMenuItem::with_id(app, "login", "Start at Login", true, login_enabled, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Murmur", true, Some("CmdOrCtrl+Q"))?;
             let sep = || PredefinedMenuItem::separator(app);
             let menu = Menu::with_items(
                 app,
-                &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &login_item, &quit],
+                &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &reset_widget, &login_item, &quit],
             )?;
 
             TrayIconBuilder::with_id("murmur")
@@ -757,6 +779,7 @@ pub fn run() {
                     "quit" => app.exit(0),
                     "open" => open_main_window(app, Some("home")),
                     "history" => open_main_window(app, Some("history")),
+                    "reset_widget" => widget_drag::reset(app),
                     "copy_last" => {
                         let core = app.state::<Arc<Core>>();
                         let text = core.last_text.lock().unwrap().clone().or_else(history::last_text);
@@ -772,12 +795,21 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            app.manage(widget_drag::WidgetDrag::load());
             if let Some(w) = app.get_webview_window("widget") {
                 let _ = w.set_ignore_cursor_events(true);
                 #[cfg(target_os = "macos")]
                 if let Err(e) = panel::convert(&w) {
                     mlog!("widget: panel conversion failed: {e}");
                 }
+                let handle = app.handle().clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Moved(pos) = event {
+                        widget_drag::on_moved(&handle, *pos);
+                    }
+                });
+                let handle = app.handle().clone();
+                std::thread::spawn(move || widget_drag::track(handle));
             }
 
             let core = Arc::new(Core {

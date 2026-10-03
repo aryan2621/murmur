@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ThemeProvider } from "next-themes";
+import { toast } from "sonner";
 import { BarChart3, History as HistoryIcon, Home as HomeIcon, Mic, Settings as SettingsIcon } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Kbd } from "@/components/bits";
-import { events } from "@/lib/api";
+import { api, events } from "@/lib/api";
 import { useAppState } from "@/hooks/use-app";
-import { cn } from "@/lib/utils";
+import { cn, focusedField, insertAtCursor } from "@/lib/utils";
 import Home from "@/pages/Home";
 import Insights from "@/pages/Insights";
 import History from "@/pages/History";
@@ -63,6 +64,25 @@ export default function App() {
 
   const status = app.state?.status ?? "Starting…";
   const inSetup = !!app.state && (!app.state.config.setup_done || rerunSetup);
+
+  // Dictation while Murmur is in front lands on Home's scratchpad or Setup's test box; on the
+  // other pages it goes into the focused field, or onto the clipboard so it is never lost.
+  const handledByPage = useRef(false);
+  handledByPage.current = inSetup || tab === "home";
+  useEffect(() => {
+    const un = events.dictation((text) => {
+      if (handledByPage.current) return;
+      const el = focusedField();
+      if (el) return insertAtCursor(el, text);
+      api.copy(text).then(
+        () => toast.success("Dictation copied — press ⌘V"),
+        () => toast.error("Could not copy the dictation"),
+      );
+    });
+    return () => {
+      un.then((u) => u());
+    };
+  }, []);
   const endSetup = () => {
     app.setState((s) => (s ? { ...s, config: { ...s.config, setup_done: true } } : s));
     setRerunSetup(false);

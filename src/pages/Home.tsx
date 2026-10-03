@@ -11,23 +11,12 @@ import { EmptyState, Kbd, PageHeader, Panel, SectionTitle } from "@/components/b
 import { api, events, wordCount } from "@/lib/api";
 import { formatMinutes, streak, wordsPerDay } from "@/lib/metrics";
 import { useAppState, useHistory } from "@/hooks/use-app";
+import { focusedField, insertAtCursor } from "@/lib/utils";
 import type { Tab } from "@/App";
 
 function greeting() {
   const h = new Date().getHours();
   return h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-}
-
-/** Inserts text at the cursor of a field (keeps undo where the browser supports it). */
-function insertAtCursor(el: HTMLTextAreaElement | HTMLInputElement, text: string) {
-  el.focus();
-  const start = el.selectionStart ?? el.value.length;
-  const before = el.value.slice(0, start);
-  const sep = before && !/\s$/.test(before) ? " " : "";
-  if (!document.execCommand("insertText", false, sep + text)) {
-    el.setRangeText(sep + text, start, el.selectionEnd ?? start, "end");
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }
 }
 
 const spark: ChartConfig = { value: { label: "Words", color: "var(--chart-1)" } };
@@ -59,9 +48,8 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
   // Dictation while Murmur is in front: into whichever field has focus, else the scratchpad.
   useEffect(() => {
     const un = events.dictation((text) => {
-      const el = document.activeElement;
-      const isField = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && /^(text|search)$/.test(el.type));
-      if (isField && el !== notesRef.current) return insertAtCursor(el, text);
+      const el = focusedField();
+      if (el && el !== notesRef.current) return insertAtCursor(el, text);
       const pad = notesRef.current;
       if (!pad) return;
       if (el !== pad) {

@@ -53,9 +53,16 @@ pub fn detect() -> Target {
         fn AXUIElementSetMessagingTimeout(el: AXUIElementRef, seconds: f32) -> i32;
     }
 
-    let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() else { return Target::Unknown };
+    /// kAXErrorNoValue: the app answered, and nothing in it has keyboard focus.
+    const AX_ERROR_NO_VALUE: i32 = -25212;
+
+    let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+        mlog!("focus: no frontmost app → Unknown");
+        return Target::Unknown;
+    };
     let pid = front.processIdentifier();
     if pid as u32 == std::process::id() {
+        mlog!("focus: Murmur is the frontmost app");
         return Target::Murmur;
     }
     let bundle = front.bundleIdentifier().map(|b| b.to_string()).unwrap_or_default();
@@ -63,6 +70,7 @@ pub fn detect() -> Target {
     unsafe {
         let app = AXUIElementCreateApplication(pid);
         if app.is_null() {
+            mlog!("focus: app={bundle} has no accessibility element → Unknown");
             return Target::Unknown;
         }
         let app_cf = CFType::wrap_under_create_rule(app as _);
@@ -82,7 +90,14 @@ pub fn detect() -> Target {
         );
         drop(app_cf);
         if err != 0 || focused.is_null() {
-            return classify(&bundle, None, false);
+            // Nothing focused at all can't take a paste; any other error just means we can't tell.
+            let target = if err == AX_ERROR_NO_VALUE {
+                Target::NotEditable { app: bundle.clone(), role: "none".into() }
+            } else {
+                classify(&bundle, None, false)
+            };
+            mlog!("focus: app={bundle} no focused element (AX error {err}) → {target:?}");
+            return target;
         }
         let focused_cf = CFType::wrap_under_create_rule(focused as _);
 
@@ -130,11 +145,116 @@ pub fn frontmost_bundle() -> String {
 
 /// Frame of the frontmost app's focused window in screen points (top-left origin):
 /// `(x, y, width, height)`. Used to show the widget on the window being dictated into.
+///
+/// Accessibility's focused window can sit on another Space or display (Finder on the desktop
+/// reports a Finder window from elsewhere, for example), so it is only trusted when it is one
+/// of the app's windows actually on screen; otherwise the app's frontmost on-screen window is
+/// used, and None (screen under the mouse) when the app has nothing on screen.
 #[cfg(target_os = "macos")]
 pub fn active_window_frame() -> Option<(f64, f64, f64, f64)> {
+    use objc2_app_kit::NSWorkspace;
+
+    let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let pid = front.processIdentifier();
+    let on_screen = onscreen_windows(pid);
+    let focused = ax_focused_window_frame(pid);
+    let same = |a: &(f64, f64, f64, f64), b: &(f64, f64, f64, f64)| {
+        (a.0 - b.0).abs() < 2.0 && (a.1 - b.1).abs() < 2.0 && (a.2 - b.2).abs() < 2.0 && (a.3 - b.3).abs() < 2.0
+    };
+    match focused {
+        Some(f) if on_screen.iter().any(|w| same(w, &f)) => Some(f),
+        _ => {
+            if focused.is_some() {
+                mlog!("widget: focused window {focused:?} is not on screen, using {:?}", on_screen.first());
+            }
+            on_screen.first().copied()
+        }
+    }
+}
+
+/// Normal-level windows of `pid` on the Spaces currently shown, front to back, in screen points
+/// (top-left origin). Needs no permission: only window names are protected.
+#[cfg(target_os = "macos")]
+fn onscreen_windows(pid: i32) -> Vec<(f64, f64, f64, f64)> {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct CGRect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
+        fn CGRectMakeWithDictionaryRepresentation(dict: *const c_void, rect: *mut CGRect) -> bool;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, kind: isize, out: *mut c_void) -> bool;
+        fn CFRelease(cf: *const c_void);
+    }
+    const ON_SCREEN_ONLY: u32 = 1 << 0;
+    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    const NUMBER_SINT32: isize = 3;
+    const NUMBER_FLOAT64: isize = 6;
+    /// Skips helper windows (tooltips, status items, invisible trackers).
+    const MIN_SIDE: f64 = 50.0;
+
+    let k_pid = CFString::from_static_string("kCGWindowOwnerPID");
+    let k_layer = CFString::from_static_string("kCGWindowLayer");
+    let k_alpha = CFString::from_static_string("kCGWindowAlpha");
+    let k_bounds = CFString::from_static_string("kCGWindowBounds");
+    let mut windows = Vec::new();
+    unsafe {
+        let list = CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP_ELEMENTS, 0);
+        if list.is_null() {
+            return windows;
+        }
+        for i in 0..CFArrayGetCount(list) {
+            let info = CFArrayGetValueAtIndex(list, i);
+            let int = |key: &CFString| {
+                let n = CFDictionaryGetValue(info, key.as_CFTypeRef());
+                let mut v = 0i32;
+                (!n.is_null() && CFNumberGetValue(n, NUMBER_SINT32, &mut v as *mut i32 as *mut c_void)).then_some(v)
+            };
+            if int(&k_pid) != Some(pid) || int(&k_layer) != Some(0) {
+                continue;
+            }
+            let mut alpha = 1.0f64;
+            let a = CFDictionaryGetValue(info, k_alpha.as_CFTypeRef());
+            if !a.is_null() {
+                CFNumberGetValue(a, NUMBER_FLOAT64, &mut alpha as *mut f64 as *mut c_void);
+            }
+            let bounds = CFDictionaryGetValue(info, k_bounds.as_CFTypeRef());
+            let mut r = CGRect::default();
+            if alpha > 0.0
+                && !bounds.is_null()
+                && CGRectMakeWithDictionaryRepresentation(bounds, &mut r)
+                && r.width >= MIN_SIDE
+                && r.height >= MIN_SIDE
+            {
+                windows.push((r.x, r.y, r.width, r.height));
+            }
+        }
+        CFRelease(list);
+    }
+    windows
+}
+
+/// The app's focused (or main) window frame as Accessibility reports it, wherever it is.
+#[cfg(target_os = "macos")]
+fn ax_focused_window_frame(pid: i32) -> Option<(f64, f64, f64, f64)> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::string::{CFString, CFStringRef};
-    use objc2_app_kit::NSWorkspace;
     use std::ffi::c_void;
 
     #[repr(C)]
@@ -166,9 +286,8 @@ pub fn active_window_frame() -> Option<(f64, f64, f64, f64)> {
         (err == 0 && !v.is_null()).then(|| CFType::wrap_under_create_rule(v as _))
     }
 
-    let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
     unsafe {
-        let app = AXUIElementCreateApplication(front.processIdentifier());
+        let app = AXUIElementCreateApplication(pid);
         if app.is_null() {
             return None;
         }
