@@ -142,6 +142,13 @@ export default function Settings({ app, onRunSetup }: { app: ReturnType<typeof u
             </Button>
           </div>
         </Row>
+        <Row
+          id="echo"
+          title="Echo cancellation"
+          description="Removes music and videos playing from this Mac’s speakers from what Murmur hears. Opens the mic about a quarter of a second slower. Works with the System default microphone."
+        >
+          <Switch id="echo" checked={c.echo_cancellation} onCheckedChange={(v) => save({ echo_cancellation: v })} />
+        </Row>
       </Section>
 
       <Section icon={Type} tint="bg-emerald-500" title="Text">

@@ -17,6 +17,9 @@ pub struct Config {
     pub translate: bool,
     /// Microphone name; `None` follows the system default input.
     pub input_device: Option<String>,
+    /// Cancel out sound playing from the Mac's own speakers (music, videos) with Apple's voice
+    /// processing. Only with the system default microphone; opens the mic ~0.25 s slower.
+    pub echo_cancellation: bool,
     /// Names, jargon and acronyms Whisper should spell correctly.
     pub vocabulary: Vec<String>,
     /// Fix-ups applied after transcription: whole-word, case-insensitive `from` → `to`.
@@ -49,6 +52,7 @@ impl Default for Config {
             language: "en".into(),
             translate: false,
             input_device: None,
+            echo_cancellation: true,
             vocabulary: vec![],
             replacements: vec![],
             remove_fillers: true,

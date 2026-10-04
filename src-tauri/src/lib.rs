@@ -275,7 +275,10 @@ impl Core {
         let on_level = Box::new(move |level: f32| {
             let _ = app.emit_to("widget", "level", level);
         });
-        if let Err(e) = self.recorder.start(self.cfg().input_device, on_level) {
+        if let Err(e) = {
+            let cfg = self.cfg();
+            self.recorder.start(cfg.input_device, cfg.echo_cancellation, on_level)
+        } {
             self.set_phase(Phase::Idle);
             self.fail(&format!("Mic error: {e}"));
             return;
@@ -609,6 +612,7 @@ fn show_without_focus(win: &WebviewWindow) {
 }
 
 fn hide_widget(win: &WebviewWindow) {
+    widget_drag::release(win.app_handle());
     #[cfg(target_os = "macos")]
     if panel::hide(win) {
         return;
@@ -759,14 +763,13 @@ pub fn run() {
             let open_item = MenuItem::with_id(app, "open", "Open Murmur…", true, Some("CmdOrCtrl+,"))?;
             let history_item = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
             let copy_last = MenuItem::with_id(app, "copy_last", "Copy Last Dictation", true, None::<&str>)?;
-            let reset_widget = MenuItem::with_id(app, "reset_widget", "Reset Widget Position", true, None::<&str>)?;
             let login_enabled = app.autolaunch().is_enabled().unwrap_or(false);
             let login_item = CheckMenuItem::with_id(app, "login", "Start at Login", true, login_enabled, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Murmur", true, Some("CmdOrCtrl+Q"))?;
             let sep = || PredefinedMenuItem::separator(app);
             let menu = Menu::with_items(
                 app,
-                &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &reset_widget, &login_item, &quit],
+                &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &login_item, &quit],
             )?;
 
             TrayIconBuilder::with_id("murmur")
@@ -779,7 +782,6 @@ pub fn run() {
                     "quit" => app.exit(0),
                     "open" => open_main_window(app, Some("home")),
                     "history" => open_main_window(app, Some("history")),
-                    "reset_widget" => widget_drag::reset(app),
                     "copy_last" => {
                         let core = app.state::<Arc<Core>>();
                         let text = core.last_text.lock().unwrap().clone().or_else(history::last_text);
@@ -795,7 +797,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            app.manage(widget_drag::WidgetDrag::load());
+            app.manage(widget_drag::WidgetDrag::default());
             if let Some(w) = app.get_webview_window("widget") {
                 let _ = w.set_ignore_cursor_events(true);
                 #[cfg(target_os = "macos")]

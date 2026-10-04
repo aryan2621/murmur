@@ -32,6 +32,7 @@ tauri-nspanel = "2.1"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioEngine", "AVAudioNode", "AVAudioIONode", "AVAudioMixerNode", "AVAudioFormat", "AVAudioBuffer", "AVAudioTime", "AVAudioTypes"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

@@ -1,8 +1,7 @@
 //! Dragging the widget. Clicks fall through it everywhere except on its visible parts (the
-//! window is larger than what it shows), and once dragged it stays where it was put, across
-//! launches, until "Reset Widget Position" in the menu bar.
+//! window is larger than what it shows). A drag moves it for as long as it's showing; the next
+//! time it appears it goes back to the window you're working in.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
@@ -16,22 +15,8 @@ pub struct WidgetDrag {
     hit: Mutex<Vec<Rect>>,
     /// A drag started on the widget and the mouse button hasn't been released yet.
     armed: AtomicBool,
-    /// Where the user put the widget; None = place it automatically.
+    /// Where the user dragged the widget while it's showing; None = place it automatically.
     pinned: Mutex<Option<PhysicalPosition<i32>>>,
-}
-
-fn position_file() -> PathBuf {
-    crate::config::data_dir().join("widget_position.txt")
-}
-
-impl WidgetDrag {
-    pub fn load() -> Self {
-        let pinned = std::fs::read_to_string(position_file()).ok().and_then(|s| {
-            let (x, y) = s.trim().split_once(',')?;
-            Some(PhysicalPosition::new(x.parse().ok()?, y.parse().ok()?))
-        });
-        Self { pinned: Mutex::new(pinned), ..Default::default() }
-    }
 }
 
 /// Where the user put the widget, if that spot is still on a connected display.
@@ -56,17 +41,13 @@ pub fn on_moved(app: &AppHandle, pos: PhysicalPosition<i32>) {
     }
 }
 
-/// Back to automatic placement.
-pub fn reset(app: &AppHandle) {
+/// The widget was hidden: next time it goes back to the window you're working in.
+pub fn release(app: &AppHandle) {
     *app.state::<WidgetDrag>().pinned.lock().unwrap() = None;
-    let _ = std::fs::remove_file(position_file());
-    if let Some(w) = app.get_webview_window("widget") {
-        crate::place_widget(app, &w);
-    }
 }
 
-/// Keeps clicks going through the widget except over its visible parts, and saves the position
-/// once a drag ends. Runs for the life of the app.
+/// Keeps clicks going through the widget except over its visible parts, and notices when a drag
+/// ends. Runs for the life of the app.
 pub fn track(app: AppHandle) {
     #[cfg(target_os = "macos")]
     loop {
@@ -74,9 +55,6 @@ pub fn track(app: AppHandle) {
         let state = app.state::<WidgetDrag>();
         if state.armed.load(Ordering::SeqCst) && !left_button_down() {
             state.armed.store(false, Ordering::SeqCst);
-            if let Some(p) = *state.pinned.lock().unwrap() {
-                let _ = std::fs::write(position_file(), format!("{},{}", p.x, p.y));
-            }
         }
         let Some(w) = app.get_webview_window("widget") else { continue };
         let Ok(ns) = w.ns_window() else { continue };
