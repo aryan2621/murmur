@@ -163,6 +163,55 @@ fn bundle_of(pid: i32) -> String {
 /// A frame in screen points, top-left origin: (x, y, width, height).
 pub type Frame = (f64, f64, f64, f64);
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Default)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// The connected displays, in screen points (top-left origin, like window frames).
+#[cfg(target_os = "macos")]
+fn display_frames() -> Vec<Frame> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
+    }
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    if unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) } != 0 {
+        return Vec::new();
+    }
+    ids[..count as usize]
+        .iter()
+        .map(|&id| {
+            let r = unsafe { CGDisplayBounds(id) };
+            (r.x, r.y, r.width, r.height)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+/// Mostly on a display. While Spaces slide past, the window server reports windows at in-between
+/// positions off every display; those aren't where the user is looking.
+fn on_display(f: &Frame, displays: &[Frame]) -> bool {
+    displays.is_empty() || displays.iter().map(|d| overlap(f, d)).sum::<f64>() >= 0.5 * area(f)
+}
+
+#[cfg(target_os = "macos")]
+/// The part of a window that's on its display, so the widget isn't placed below the screen.
+fn visible_part(f: Frame, displays: &[Frame]) -> Frame {
+    let Some(d) = displays.iter().max_by(|a, b| overlap(&f, a).total_cmp(&overlap(&f, b))).filter(|d| overlap(&f, d) > 0.0) else {
+        return f;
+    };
+    let (x, y) = (f.0.max(d.0), f.1.max(d.1));
+    (x, y, (f.0 + f.2).min(d.0 + d.2) - x, (f.1 + f.3).min(d.1 + d.3) - y)
+}
+
 /// A normal window on the Spaces currently shown.
 #[cfg(target_os = "macos")]
 struct OnScreen {
@@ -172,22 +221,14 @@ struct OnScreen {
 }
 
 /// Normal-level windows on the Spaces currently shown, front to back, leaving out ours, the
-/// system's, invisible ones and tiny helpers. Needs no permission (only window titles are
-/// protected).
+/// system's, invisible ones, tiny helpers and ones off every display. Needs no permission (only
+/// window titles are protected).
 #[cfg(target_os = "macos")]
-fn onscreen_windows() -> Vec<OnScreen> {
+fn onscreen_windows(displays: &[Frame]) -> Vec<OnScreen> {
     use core_foundation::base::TCFType;
     use core_foundation::string::{CFString, CFStringRef};
     use std::ffi::c_void;
 
-    #[repr(C)]
-    #[derive(Default)]
-    struct CGRect {
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    }
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
@@ -245,7 +286,10 @@ fn onscreen_windows() -> Vec<OnScreen> {
             let bounds = CFDictionaryGetValue(info, k_bounds.as_CFTypeRef());
             let mut r = CGRect::default();
             if alpha > 0.0 && !bounds.is_null() && CGRectMakeWithDictionaryRepresentation(bounds, &mut r) && r.width >= MIN_SIDE && r.height >= MIN_SIDE {
-                windows.push(OnScreen { pid, owner, frame: (r.x, r.y, r.width, r.height) });
+                let frame = (r.x, r.y, r.width, r.height);
+                if on_display(&frame, displays) {
+                    windows.push(OnScreen { pid, owner, frame });
+                }
             }
         }
         CFRelease(list);
@@ -319,7 +363,9 @@ mod ax {
 /// topmost window.
 #[cfg(target_os = "macos")]
 pub fn active_pid() -> Option<i32> {
-    ax::focused_pid().filter(|&pid| pid != std::process::id() as i32).or_else(|| onscreen_windows().first().map(|w| w.pid))
+    ax::focused_pid()
+        .filter(|&pid| pid != std::process::id() as i32)
+        .or_else(|| onscreen_windows(&display_frames()).first().map(|w| w.pid))
 }
 
 fn area(f: &Frame) -> f64 {
@@ -332,17 +378,28 @@ fn overlap(a: &Frame, b: &Frame) -> f64 {
     if w > 0.0 && h > 0.0 { w * h } else { 0.0 }
 }
 
-/// The window the user is working in, on screen now; None when it can't be told (the caller
-/// then uses the screen under the mouse).
+/// The app's window nearest the front that isn't a strip inside a bigger one of its windows
+/// (full-screen browsers and Electron apps stack toolbars over the page as separate windows).
+#[cfg(target_os = "macos")]
+fn front_window<'a>(mine: &[&'a OnScreen]) -> Option<&'a OnScreen> {
+    mine.iter()
+        .copied()
+        .find(|w| !mine.iter().any(|o| area(&o.frame) > area(&w.frame) && overlap(&o.frame, &w.frame) >= 0.9 * area(&w.frame)))
+}
+
+/// The window the user is working in, on screen now (the part of it on its display); None when
+/// it can't be told (the caller then uses the screen under the mouse).
 #[cfg(target_os = "macos")]
 pub fn active_window_frame() -> Option<Frame> {
-    let windows = onscreen_windows();
+    let displays = display_frames();
+    let windows = onscreen_windows(&displays);
     let focused = ax::focused_pid().filter(|&pid| pid != std::process::id() as i32);
     // The focused app, else (no Accessibility answer) the owner of the topmost window.
     let pid = focused.or_else(|| windows.first().map(|w| w.pid))?;
     let mine: Vec<&OnScreen> = windows.iter().filter(|w| w.pid == pid).collect();
-    let Some(largest) = mine.iter().max_by(|a, b| area(&a.frame).total_cmp(&area(&b.frame))) else {
-        // The focused app has nothing on screen here (e.g. Finder with only the desktop).
+    let Some(front) = front_window(&mine) else {
+        // The focused app has nothing on screen here (e.g. Finder with only the desktop, or a
+        // Space still sliding in).
         mlog!("widget: the app in front (pid {pid}) has no window on screen; using the screen under the mouse");
         return None;
     };
@@ -350,14 +407,14 @@ pub fn active_window_frame() -> Option<Frame> {
     if let Some(f) = ax::focused_window(pid) {
         let covered: f64 = mine.iter().map(|w| overlap(&w.frame, &f)).sum();
         if covered >= 0.5 * area(&f) {
-            mlog!("widget: on {}'s focused window {f:?}", largest.owner);
-            return Some(f);
+            mlog!("widget: on {}'s focused window {f:?}", front.owner);
+            return Some(visible_part(f, &displays));
         }
-        mlog!("widget: {}'s focused window {f:?} is elsewhere; using its largest window {:?}", largest.owner, largest.frame);
+        mlog!("widget: {}'s focused window {f:?} is elsewhere; using its front window {:?}", front.owner, front.frame);
     } else {
-        mlog!("widget: on {}'s largest window {:?}", largest.owner, largest.frame);
+        mlog!("widget: on {}'s front window {:?}", front.owner, front.frame);
     }
-    Some(largest.frame)
+    Some(visible_part(front.frame, &displays))
 }
 
 #[cfg(not(target_os = "macos"))]

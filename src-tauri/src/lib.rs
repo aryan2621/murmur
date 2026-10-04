@@ -171,11 +171,26 @@ impl Shared {
             mlog!("widget: window not found");
             return;
         };
-        self.widget_shown.fetch_add(1, Ordering::SeqCst);
+        let shown = self.widget_shown.fetch_add(1, Ordering::SeqCst) + 1;
         if !widget_drag::dragging(&self.app) {
             place_widget(&self.app, &w, mode);
         }
         show_without_focus(&w);
+        // Right after a switch (a Space still sliding in, an app still activating) the window in
+        // front isn't settled yet; look again once it is, unless the widget was shown since.
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            for ms in [300, 700] {
+                std::thread::sleep(Duration::from_millis(ms));
+                let Some(shared) = app.try_state::<Arc<Shared>>() else { return };
+                if shared.widget_shown() != shown || !w.is_visible().unwrap_or(false) {
+                    return;
+                }
+                if !widget_drag::dragging(&app) {
+                    place_widget(&app, &w, mode);
+                }
+            }
+        });
     }
 
     /// How many times the widget has been shown; pass it to `hide_widget_since`.
@@ -400,33 +415,18 @@ fn key_label(key: &str) -> &str {
     }
 }
 
-/// The widget window is sized for the assistant's answer card; dictation only uses its bottom,
-/// a pill this tall.
-const PILL_HEIGHT: f64 = 64.0;
-
-/// Where the widget goes. A spot the user dragged it to wins.
-/// Dictation: bottom-centre of the window being dictated into, so it shows up where you're
-/// looking. Assistant: bottom-centre of the screen with the window you're working in.
-/// Both fall back to the screen under the mouse when no window can be found.
+/// Where the widget goes: bottom-centre of the screen you're working on, the same spot every
+/// time (like Capturita's camera bubble). It used to sit on the window being dictated into, but
+/// that window can't be told reliably while Spaces slide or apps activate, so it landed on the
+/// wrong window. The window in front only picks the screen; else the screen under the mouse.
+/// A spot the user dragged it to wins.
 fn place_widget(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
     if let Some(p) = widget_drag::pinned(app) {
         let _ = win.set_position(p);
         return;
     }
-    let (Ok(size), Ok(scale)) = (win.outer_size(), win.scale_factor()) else { return };
-    let (w, h) = (size.width as f64 / scale, size.height as f64 / scale);
-    let frame = focus::active_window_frame();
-
-    if mode == Mode::Dictation {
-        const MARGIN: f64 = 24.0;
-        if let Some((x, y, fw, fh)) = frame {
-            // Short windows (e.g. a one-line palette): sit just below them instead of covering them.
-            let pill_bottom = if fh > PILL_HEIGHT + MARGIN * 3.0 { y + fh - MARGIN } else { y + fh + 8.0 + PILL_HEIGHT };
-            let _ = win.set_position(tauri::LogicalPosition::new(x + (fw - w) / 2.0, pill_bottom - h));
-            return;
-        }
-    }
-
+    let Ok(size) = win.outer_size() else { return };
+    let frame = own_focused_window(app).or_else(focus::active_window_frame);
     let monitor = frame
         .and_then(|(x, y, w, h)| monitor_at_point(app, x + w / 2.0, y + h / 2.0))
         .or_else(|| {
@@ -444,6 +444,18 @@ fn place_widget(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
     let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
     let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
     let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Murmur's app window when it's the one in front (the window lookup leaves out our own).
+fn own_focused_window(app: &AppHandle) -> Option<focus::Frame> {
+    let main = app.get_webview_window("main")?;
+    if !main.is_visible().unwrap_or(false) || !main.is_focused().unwrap_or(false) || main.is_minimized().unwrap_or(false) {
+        return None;
+    }
+    let (p, size, s) = (main.outer_position().ok()?, main.outer_size().ok()?, main.scale_factor().ok()?);
+    let f = (p.x as f64 / s, p.y as f64 / s, size.width as f64 / s, size.height as f64 / s);
+    mlog!("widget: on Murmur's window {f:?}");
+    Some(f)
 }
 
 /// The display containing a point in screen points (top-left origin). Monitor frames are in

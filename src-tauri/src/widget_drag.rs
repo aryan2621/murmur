@@ -1,6 +1,6 @@
 //! Dragging the widget. Clicks fall through it everywhere except on its visible parts (the
 //! window is larger than what it shows). A drag moves it for as long as it's showing; the next
-//! time it appears it goes back to the window you're working in.
+//! time it appears it goes back to the bottom of the screen you're working on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -41,7 +41,7 @@ pub fn on_moved(app: &AppHandle, pos: PhysicalPosition<i32>) {
     }
 }
 
-/// The widget was hidden: next time it goes back to the window you're working in.
+/// The widget was hidden: next time it goes back to the bottom of the screen you're working on.
 pub fn release(app: &AppHandle) {
     *app.state::<WidgetDrag>().pinned.lock().unwrap() = None;
 }
