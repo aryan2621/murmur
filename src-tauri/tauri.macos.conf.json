@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "./scripts/build-llama-server.sh && pnpm ui:dev",
+    "beforeBuildCommand": "./scripts/build-llama-server.sh && pnpm ui:build"
+  },
+  "bundle": {
+    "externalBin": ["binaries/llama-server"]
+  }
+}

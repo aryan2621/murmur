@@ -76,6 +76,13 @@ pub fn search(query: &str, limit: usize) -> Vec<Entry> {
         .collect()
 }
 
+/// One page of matches, newest first (`page` counts from 0), and how many match in all.
+pub fn page(query: &str, page: usize, size: usize) -> (Vec<Entry>, usize) {
+    let all = search(query, usize::MAX);
+    let total = all.len();
+    (all.into_iter().skip(page * size).take(size).collect(), total)
+}
+
 pub fn delete(time: &str) -> anyhow::Result<()> {
     let entries: Vec<Entry> = load().into_iter().filter(|e| e.time != time).collect();
     write_all(&entries)

@@ -3,10 +3,13 @@ macro_rules! mlog {
     ($($t:tt)*) => { $crate::config::log(&format!($($t)*)) };
 }
 
+#[cfg(target_os = "macos")]
+mod assistant;
 mod audio;
 mod cleanup;
 mod commands;
 mod config;
+mod dictation;
 #[cfg(target_os = "macos")]
 mod fn_key;
 mod focus;
@@ -18,11 +21,14 @@ mod paste;
 mod transcribe;
 mod widget_drag;
 
+#[cfg(target_os = "macos")]
+use assistant::Assistant;
 use audio::Recorder;
 use config::Config;
-use gesture::ReleaseAction;
-use hotkey::HotkeyEvent;
-use serde::Serialize;
+use dictation::Dictation;
+use hotkey::{Hotkey, HotkeyEvent};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
@@ -36,57 +42,37 @@ const MIN_SECONDS: f32 = 0.3;
 /// Below this peak RMS the clip is considered silence (prevents Whisper hallucinations).
 const SILENCE_RMS: f32 = 0.006;
 
+/// Who the floating widget is showing for; each is placed where it's most useful.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Phase {
-    Loading,
-    Idle,
-    Recording,
-    Transcribing,
+pub enum Mode {
+    Dictation,
+    Assistant,
 }
 
-#[derive(Serialize, Clone)]
-struct WidgetState<'a> {
-    state: &'a str,
-    message: Option<String>,
-    progress: Option<f32>,
-}
-
-/// Hotkey timing state used to tell holds, taps and double-taps apart.
-#[derive(Default)]
-struct Gesture {
-    pressed_at: Option<Instant>,
-    last_tap_end: Option<Instant>,
-    gap_before_press: Option<Duration>,
-    /// Hands-free recording: runs until the next press.
-    locked: bool,
-    /// The press that stopped a hands-free recording; its release is not a gesture.
-    ignore_release: bool,
-}
-
-struct Core {
+/// What dictation and the assistant share: settings, the mic, the speech model, the menu bar
+/// status line and the floating widget. Only one of them uses the mic at a time.
+pub struct Shared {
     app: AppHandle,
     cfg: RwLock<Config>,
     recorder: Recorder,
     transcriber: Mutex<Option<Arc<Transcriber>>>,
-    phase: Mutex<Phase>,
-    gesture: Mutex<Gesture>,
-    last_text: Mutex<Option<String>>,
-    status_item: MenuItem<Wry>,
-    status: Mutex<String>,
     /// Serialises model loads so a press during an idle reload doesn't load it twice.
     load_lock: Mutex<()>,
+    /// The speech model is being downloaded or loaded (or waits for setup to download it).
+    loading: AtomicBool,
     last_used: Mutex<Instant>,
-    /// Speech model download progress (0–1) while one is running.
-    download: Mutex<Option<f32>>,
+    /// Download progress (0–1) of the speech ("speech") and AI ("brain") models, while downloading.
+    downloads: Mutex<HashMap<&'static str, f32>>,
+    status_item: MenuItem<Wry>,
+    /// Same text as the menu bar status line, for the app window.
+    status: Mutex<String>,
+    /// Bumped every time the widget is shown, so a hide scheduled earlier can tell it's stale.
+    widget_shown: AtomicU64,
 }
 
-impl Core {
+impl Shared {
     fn cfg(&self) -> Config {
         self.cfg.read().unwrap().clone()
-    }
-
-    fn widget(&self) -> Option<WebviewWindow> {
-        self.app.get_webview_window("widget")
     }
 
     fn set_status(&self, text: &str) {
@@ -96,11 +82,29 @@ impl Core {
     }
 
     fn ready_status(&self) {
-        if paste::has_permission(false) {
-            self.set_status(&format!("Ready — hold {} to dictate", key_label(&self.cfg().hotkey)));
-        } else {
+        if !paste::has_permission(false) {
             self.set_status("Allow Murmur in Privacy & Security → Accessibility");
+            return;
         }
+        let cfg = self.cfg();
+        let dictate = key_label(&cfg.hotkey);
+        if cfg!(target_os = "macos") && cfg.assistant_enabled {
+            self.set_status(&format!("Ready — hold {dictate} to dictate, {} to ask", key_label(&cfg.assistant_hotkey)));
+        } else {
+            self.set_status(&format!("Ready — hold {dictate} to dictate"));
+        }
+    }
+
+    fn loading(&self) -> bool {
+        self.loading.load(Ordering::SeqCst)
+    }
+
+    fn model_loaded(&self) -> bool {
+        self.transcriber.lock().unwrap().is_some()
+    }
+
+    fn touch(&self) {
+        *self.last_used.lock().unwrap() = Instant::now();
     }
 
     /// The loaded model, loading it first if it was unloaded to save memory.
@@ -123,12 +127,26 @@ impl Core {
         Ok(t)
     }
 
-    /// Frees the model after `unload_after_minutes` of inactivity.
-    fn watch_idle(self: &Arc<Self>) {
+    /// A recording has started: reload the model (if it was freed) while the user is talking.
+    fn preload_transcriber(self: &Arc<Self>) {
+        self.touch();
+        if !self.model_loaded() {
+            let shared = self.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = shared.ensure_transcriber() {
+                    mlog!("model reload failed: {e}");
+                }
+            });
+        }
+    }
+
+    /// Frees the model after `unload_after_minutes` of inactivity. A transcription under way
+    /// keeps its own reference, so it's never cut short.
+    fn watch_idle(&self) {
         loop {
             std::thread::sleep(Duration::from_secs(30));
             let minutes = self.cfg().unload_after_minutes;
-            if minutes == 0 || self.phase() != Phase::Idle {
+            if minutes == 0 || self.loading() {
                 continue;
             }
             let idle = self.last_used.lock().unwrap().elapsed();
@@ -138,365 +156,230 @@ impl Core {
         }
     }
 
-    fn phase(&self) -> Phase {
-        *self.phase.lock().unwrap()
-    }
-
-    fn set_phase(&self, p: Phase) {
-        *self.phase.lock().unwrap() = p;
-    }
-
-    /// Murmur's app window is open and has keyboard focus, so its page can take dictation.
-    fn main_window_focused(&self) -> bool {
-        self.app
-            .get_webview_window("main")
-            .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
-    }
-
-    fn emit(&self, state: &str, message: Option<String>, progress: Option<f32>) {
-        let _ = self.app.emit_to("widget", "widget-state", WidgetState { state, message, progress });
-    }
-
-    fn show_widget(&self) {
-        let Some(w) = self.widget() else {
-            mlog!("widget: window not found");
-            return;
-        };
-        let before = focus::frontmost_bundle();
-        if !widget_drag::dragging(&self.app) {
-            place_widget(&self.app, &w);
-        }
-        show_without_focus(&w);
-        // Diagnostics: showing the widget must never change which app (or Space) is in front.
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            let after = focus::frontmost_bundle();
-            if after != before {
-                mlog!("widget: front app changed from {before} to {after} while showing");
-            }
-        });
-    }
-
     fn play(&self, sound: &str) {
         if self.cfg().sounds {
             play_sound(sound);
         }
     }
 
-    /// Hides after `delay`, unless a new recording started in the meantime.
-    fn hide_widget_later(self: &Arc<Self>, delay: Duration) {
-        let core = self.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            if matches!(core.phase(), Phase::Idle | Phase::Loading) {
-                if let Some(w) = core.widget() {
-                    hide_widget(&w);
-                }
-            }
-        });
+    fn widget(&self) -> Option<WebviewWindow> {
+        self.app.get_webview_window("widget")
     }
 
-    /// Returns true when the event was consumed (only matters for Esc).
-    fn on_hotkey(self: &Arc<Self>, event: HotkeyEvent) -> bool {
-        let now = Instant::now();
-        match event {
-            HotkeyEvent::Pressed => {
-                let mut g = self.gesture.lock().unwrap();
-                if self.phase() == Phase::Recording && g.locked {
-                    g.locked = false;
-                    g.ignore_release = true;
-                    drop(g);
-                    mlog!("hands-free stopped");
-                    self.finish_recording();
-                } else if self.phase() == Phase::Idle {
-                    g.pressed_at = Some(now);
-                    g.gap_before_press = g.last_tap_end.map(|t| now - t);
-                    drop(g);
-                    self.start_recording();
-                } else if self.phase() == Phase::Loading {
-                    drop(g);
-                    self.emit("error", Some("Model still loading…".into()), None);
-                    self.show_widget();
-                    self.hide_widget_later(Duration::from_millis(1500));
-                }
-                false
-            }
-            HotkeyEvent::Released => {
-                let mut g = self.gesture.lock().unwrap();
-                if std::mem::take(&mut g.ignore_release) || g.locked || self.phase() != Phase::Recording {
-                    return false;
-                }
-                let held = g.pressed_at.map(|t| now - t).unwrap_or_default();
-                let action = gesture::on_release(held, g.gap_before_press);
-                mlog!("hotkey released after {} ms → {action:?}", held.as_millis());
-                match action {
-                    ReleaseAction::Finish => {
-                        g.last_tap_end = None;
-                        drop(g);
-                        self.finish_recording();
-                    }
-                    ReleaseAction::DiscardTap => {
-                        g.last_tap_end = Some(now);
-                        drop(g);
-                        self.cancel_recording();
-                    }
-                    ReleaseAction::LockHandsFree => {
-                        g.last_tap_end = None;
-                        g.locked = true;
-                        drop(g);
-                        self.emit("locked", None, None);
-                        self.show_widget();
-                        self.play("Tink");
-                    }
-                }
-                false
-            }
-            HotkeyEvent::Cancelled => {
-                if !self.gesture.lock().unwrap().locked {
-                    self.cancel_recording();
-                }
-                false
-            }
-            HotkeyEvent::Escape => {
-                if self.phase() != Phase::Recording {
-                    return false;
-                }
-                mlog!("cancelled with Esc");
-                self.gesture.lock().unwrap().locked = false;
-                self.cancel_recording();
-                true
-            }
-        }
-    }
-
-    /// Opens the mic for this press. Returns at once (the hotkey's thread must stay free to see
-    /// the release when it happens); the rest runs once the mic is open.
-    fn start_recording(self: &Arc<Self>) {
-        self.set_phase(Phase::Recording);
-        let app = self.app.clone();
-        let on_level = Box::new(move |level: f32| {
-            let _ = app.emit_to("widget", "level", level);
-        });
-        let cfg = self.cfg();
-        let opened = self.recorder.start_async(cfg.input_device, on_level);
-        let core = self.clone();
-        std::thread::spawn(move || match opened.recv().unwrap_or_else(|e| Err(anyhow::anyhow!("{e}"))) {
-            Ok(()) => core.recording_started(),
-            Err(e) => {
-                core.set_phase(Phase::Idle);
-                core.fail(&format!("Mic error: {e}"));
-            }
-        });
-    }
-
-    fn recording_started(self: &Arc<Self>) {
-        if self.phase() != Phase::Recording {
-            // Released and handled while the mic was still opening.
+    fn show_widget(&self, mode: Mode) {
+        let Some(w) = self.widget() else {
+            mlog!("widget: window not found");
             return;
-        }
-        self.emit("recording", None, None);
-        *self.last_used.lock().unwrap() = Instant::now();
-        if self.transcriber.lock().unwrap().is_none() {
-            // Reload while the user is still talking.
-            let core = self.clone();
-            std::thread::spawn(move || {
-                if let Err(e) = core.ensure_transcriber() {
-                    mlog!("model reload failed: {e}");
-                }
-            });
-        }
-        // Show only if this turns out to be a hold, so quick taps never flash the widget.
-        let core = self.clone();
-        let pressed_at = self.gesture.lock().unwrap().pressed_at;
-        std::thread::spawn(move || {
-            std::thread::sleep(gesture::SHOW_DELAY);
-            let g = core.gesture.lock().unwrap();
-            let same_press = g.pressed_at == pressed_at;
-            let locked = g.locked;
-            drop(g);
-            if core.phase() == Phase::Recording && same_press && !locked {
-                core.show_widget();
-                core.play("Tink");
-            }
-        });
-    }
-
-    fn cancel_recording(self: &Arc<Self>) {
-        if self.phase() != Phase::Recording {
-            return;
-        }
-        let _ = self.recorder.stop();
-        self.set_phase(Phase::Idle);
-        self.hide_widget_later(Duration::ZERO);
-    }
-
-    fn finish_recording(self: &Arc<Self>) {
-        if self.phase() != Phase::Recording {
-            return;
-        }
-        self.set_phase(Phase::Transcribing);
-        self.play("Pop");
-        let core = self.clone();
-        std::thread::spawn(move || {
-            let result = core.process();
-            core.set_phase(Phase::Idle);
-            match result {
-                Ok(hide_after) => core.hide_widget_later(hide_after),
-                Err(e) => core.fail(&e.to_string()),
-            }
-        });
-    }
-
-    /// Records → text → inserted where it makes sense. Returns how long to keep the widget up.
-    fn process(&self) -> anyhow::Result<Duration> {
-        let quick = Duration::from_millis(350);
-        let rec = self.recorder.stop()?;
-        if rec.seconds() < MIN_SECONDS || rec.peak_rms < SILENCE_RMS {
-            mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
-            return Ok(Duration::ZERO);
-        }
-        self.emit("transcribing", None, None);
-        let transcriber = self.ensure_transcriber()?;
-        let started = Instant::now();
-        let cfg = self.cfg();
-        let raw = transcriber.transcribe(&rec.samples, &cfg.language, cfg.translate, &cfg.vocabulary)?;
-        let elapsed = started.elapsed().as_millis();
-        mlog!("transcribed {:.1}s audio in {elapsed} ms", rec.seconds());
-        if cleanup::is_hallucination(&raw) {
-            return Ok(Duration::ZERO);
-        }
-        let text = cleanup::apply_replacements(&cleanup::clean(&raw, cfg.remove_fillers), &cfg.replacements);
-        if text.is_empty() {
-            return Ok(Duration::ZERO);
-        }
-        let copied = Duration::from_millis(2200);
-        let hide_after = match focus::detect() {
-            // Murmur's own window: the page puts it in the focused field or the scratchpad.
-            focus::Target::Murmur if self.main_window_focused() => {
-                let _ = self.app.emit_to("main", "dictation", &text);
-                self.emit("done", None, None);
-                quick
-            }
-            // Murmur is in front with no window of its own (a menu-bar app stays in front after
-            // its window closes), or nothing can take text: keep it on the clipboard and say so
-            // instead of a false ✓.
-            focus::Target::Murmur | focus::Target::NotEditable { .. } => {
-                paste::copy(&text)?;
-                self.emit("copied", None, None);
-                copied
-            }
-            // A text field: type it there (trailing space so dictations flow together).
-            focus::Target::Editable => {
-                paste::insert(&format!("{text} "), cfg.restore_clipboard)?;
-                self.emit("done", None, None);
-                quick
-            }
-            // Can't tell if anything will take the text: paste anyway, but keep it on the
-            // clipboard so it is never lost.
-            focus::Target::Unknown => {
-                paste::insert(&format!("{text} "), false)?;
-                self.emit("pasted", None, None);
-                copied
-            }
         };
-        *self.last_text.lock().unwrap() = Some(text.clone());
-        *self.last_used.lock().unwrap() = Instant::now();
-        if cfg.save_history {
-            history::append(&text, &raw, rec.seconds(), elapsed);
-            let _ = self.app.emit_to("main", "history-updated", ());
+        self.widget_shown.fetch_add(1, Ordering::SeqCst);
+        if !widget_drag::dragging(&self.app) {
+            place_widget(&self.app, &w, mode);
         }
-        Ok(hide_after)
+        show_without_focus(&w);
+    }
+
+    /// How many times the widget has been shown; pass it to `hide_widget_since`.
+    fn widget_shown(&self) -> u64 {
+        self.widget_shown.load(Ordering::SeqCst)
+    }
+
+    fn hide_widget(&self) {
+        if let Some(w) = self.widget() {
+            hide_widget(&w);
+        }
+    }
+
+    /// Hides the widget unless it was shown again (by either mode) after `shown` was read.
+    fn hide_widget_since(&self, shown: u64) {
+        if self.widget_shown() == shown {
+            self.hide_widget();
+        }
+    }
+
+    fn emit_widget(&self, state: &str, message: Option<String>, progress: Option<f32>) {
+        let payload = serde_json::json!({ "mode": "dictation", "state": state, "message": message, "progress": progress });
+        let _ = self.app.emit_to("widget", "widget-state", payload);
     }
 
     fn fail(self: &Arc<Self>, message: &str) {
         mlog!("{message}");
-        self.emit("error", Some(message.to_string()), None);
-        self.show_widget();
+        self.emit_widget("error", Some(message.to_string()), None);
+        self.show_widget(Mode::Dictation);
         self.hide_widget_later(Duration::from_millis(2500));
+    }
+
+    fn hide_widget_later(self: &Arc<Self>, delay: Duration) {
+        let shared = self.clone();
+        let shown = self.widget_shown();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            shared.hide_widget_since(shown);
+        });
+    }
+
+    fn downloading(&self, which: &str) -> bool {
+        self.downloads.lock().unwrap().contains_key(which)
+    }
+
+    /// Records and announces a model download's progress (`None` = finished or stopped).
+    fn download_progress(&self, which: &'static str, progress: Option<f32>) {
+        let mut downloads = self.downloads.lock().unwrap();
+        match progress {
+            Some(p) => downloads.insert(which, p),
+            None => downloads.remove(which),
+        };
+        let _ = self.app.emit_to("main", "download-progress", serde_json::json!({ "model": which, "progress": progress }));
     }
 
     /// Download (first run / model change) and load the Whisper model, then warm it up.
     fn load_model(self: &Arc<Self>) {
         let _guard = self.load_lock.lock().unwrap();
-        self.set_phase(Phase::Loading);
+        self.loading.store(true, Ordering::SeqCst);
         *self.transcriber.lock().unwrap() = None;
         let dir = config::data_dir();
-        let needs_download = !model::model_path(&dir, &self.cfg().model).exists();
+        let name = self.cfg().model;
+        let needs_download = !model::model_path(&dir, &name).exists();
+        // During setup the app window shows the progress; afterwards the floating widget does.
+        let widget = needs_download && self.cfg().setup_done;
         if needs_download {
-            self.emit("downloading", Some("Downloading speech model…".into()), Some(0.0));
-            self.show_widget();
+            self.download_progress("speech", Some(0.0));
         }
-        let path = model::ensure(&dir, &self.cfg().model, |done, total| {
+        if widget {
+            self.emit_widget("downloading", Some("Downloading speech model…".into()), Some(0.0));
+            self.show_widget(Mode::Dictation);
+        }
+        let path = model::ensure(&dir, &name, |done, total| {
             let pct = if total > 0 { done as f32 / total as f32 } else { 0.0 };
-            self.set_status(&format!("Downloading model… {:.0}%", pct * 100.0));
-            self.emit("downloading", Some(format!("Downloading model {:.0}%", pct * 100.0)), Some(pct));
-            self.set_download(Some(pct));
+            self.set_status(&format!("Downloading speech model… {:.0}%", pct * 100.0));
+            self.download_progress("speech", Some(pct));
+            if widget {
+                self.emit_widget("downloading", Some(format!("Downloading model {:.0}%", pct * 100.0)), Some(pct));
+            }
         });
-        self.set_download(None);
+        self.download_progress("speech", None);
         let path = match path {
             Ok(p) => p,
             Err(e) => {
-                self.set_phase(Phase::Idle);
+                self.loading.store(false, Ordering::SeqCst);
                 self.set_status("Model download failed — pick the model again in Settings to retry");
-                self.fail(&format!("Download failed: {e}"));
+                let _ = self.app.emit_to("main", "download-error", format!("Speech model: {e}"));
+                if self.cfg().setup_done {
+                    self.fail(&format!("Download failed: {e}"));
+                }
                 return;
             }
         };
-        self.set_status("Loading model…");
+        self.set_status("Loading speech model…");
+        let started = Instant::now();
         match Transcriber::load(&path) {
             Ok(t) => {
                 // First inference compiles GPU kernels; do it now instead of on the first dictation.
                 let _ = t.transcribe(&vec![0.0; audio::TARGET_RATE as usize], &self.cfg().language, false, &[]);
                 *self.transcriber.lock().unwrap() = Some(Arc::new(t));
-                self.set_phase(Phase::Idle);
-                *self.last_used.lock().unwrap() = Instant::now();
+                self.loading.store(false, Ordering::SeqCst);
+                self.touch();
+                mlog!("speech model {name} ready in {} ms", started.elapsed().as_millis());
                 self.ready_status();
-                if needs_download {
-                    self.emit("ready", Some(format!("Ready — hold {}", key_label(&self.cfg().hotkey))), None);
+                if widget {
+                    self.emit_widget("ready", Some(format!("Ready — hold {}", key_label(&self.cfg().hotkey))), None);
                     self.hide_widget_later(Duration::from_millis(2500));
                 }
             }
             Err(e) => {
-                self.set_phase(Phase::Idle);
+                self.loading.store(false, Ordering::SeqCst);
                 self.set_status("Model failed to load");
                 self.fail(&format!("Model load failed: {e}"));
             }
         }
     }
+}
 
-    /// Download progress for the app window (setup shows it as a progress bar).
-    fn set_download(&self, progress: Option<f32>) {
-        *self.download.lock().unwrap() = progress;
-        let _ = self.app.emit_to("main", "model-progress", progress);
+/// Everything the app runs: shared state plus the two things you can do with your voice.
+pub struct Murmur {
+    shared: Arc<Shared>,
+    dictation: Arc<Dictation>,
+    #[cfg(target_os = "macos")]
+    assistant: Arc<Assistant>,
+}
+
+impl Murmur {
+    /// Sends each key's events to its mode. Only one mode has the mic at a time: a press while
+    /// the other mode is recording or working is ignored, except that dictating stops an
+    /// assistant that is only talking or waiting in a conversation.
+    /// Returns true when the event was consumed (only matters for Esc).
+    fn on_hotkey(&self, key: Hotkey, event: HotkeyEvent) -> bool {
+        match key {
+            Hotkey::Dictation => {
+                #[cfg(target_os = "macos")]
+                if event == HotkeyEvent::Pressed && self.dictation.phase() == dictation::Phase::Idle {
+                    use assistant::Phase;
+                    let a = &self.assistant;
+                    if a.phase() == Phase::Recording && !a.conversing() {
+                        // Right Option is held for a question.
+                        return false;
+                    }
+                    if a.conversing() || a.phase() == Phase::Responding {
+                        mlog!("dictation takes over from the assistant");
+                        a.stop_all();
+                    }
+                }
+                self.dictation.on_hotkey(event)
+            }
+            Hotkey::Assistant => self.on_assistant_key(event),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_assistant_key(&self, event: HotkeyEvent) -> bool {
+        if event == HotkeyEvent::Pressed && self.dictation.phase() != dictation::Phase::Idle {
+            return false;
+        }
+        self.assistant.on_hotkey(event)
+    }
+
+    /// No assistant here; its key is never listened for.
+    #[cfg(not(target_os = "macos"))]
+    fn on_assistant_key(&self, _event: HotkeyEvent) -> bool {
+        false
+    }
+
+    /// The keys to listen for: dictation's, and the assistant's when it's on.
+    fn hotkeys(&self) -> Vec<(String, Hotkey)> {
+        let cfg = self.shared.cfg();
+        let mut keys = vec![(cfg.hotkey.clone(), Hotkey::Dictation)];
+        if cfg!(target_os = "macos") && cfg.assistant_enabled && cfg.assistant_hotkey != cfg.hotkey {
+            keys.push((cfg.assistant_hotkey, Hotkey::Assistant));
+        }
+        keys
     }
 
     /// Keeps retrying until the OS grants keyboard-listening permission.
     fn start_hotkey(self: &Arc<Self>) {
         // Presses are handled on a worker thread so the key tap's callback returns immediately;
         // macOS disables taps whose callbacks are slow (starting the mic takes a moment).
-        let (tx, rx) = std::sync::mpsc::channel::<HotkeyEvent>();
+        let (tx, rx) = std::sync::mpsc::channel::<(Hotkey, HotkeyEvent)>();
         let worker = self.clone();
         std::thread::spawn(move || {
-            for ev in rx {
-                worker.on_hotkey(ev);
+            for (key, ev) in rx {
+                worker.on_hotkey(key, ev);
             }
         });
         loop {
-            let core = self.clone();
+            let app = self.clone();
             let tx = tx.clone();
-            let handler = Box::new(move |ev: HotkeyEvent| match ev {
+            let handler = Box::new(move |key: Hotkey, ev: HotkeyEvent| match ev {
                 // Esc needs an answer (swallow or not), and the check is instant.
-                HotkeyEvent::Escape => core.on_hotkey(ev),
+                HotkeyEvent::Escape => app.on_hotkey(key, ev),
                 _ => {
-                    let _ = tx.send(ev);
+                    let _ = tx.send((key, ev));
                     false
                 }
             });
-            match hotkey::start(&self.cfg().hotkey, handler) {
+            match hotkey::start(&self.hotkeys(), handler) {
                 Ok(()) => return,
                 Err(e) => {
                     mlog!("hotkey: {e}");
-                    self.set_status("Grant Input Monitoring in System Settings → Privacy");
+                    self.shared.set_status("Grant Input Monitoring in System Settings → Privacy");
                     std::thread::sleep(Duration::from_secs(3));
                 }
             }
@@ -517,39 +400,60 @@ fn key_label(key: &str) -> &str {
     }
 }
 
-/// Bottom-centre of the window being dictated into, so the widget shows up where you're
-/// looking. Falls back to the screen under the mouse when the window can't be found.
-/// A spot the user dragged it to wins over both.
-fn place_widget(app: &AppHandle, win: &WebviewWindow) {
+/// The widget window is sized for the assistant's answer card; dictation only uses its bottom,
+/// a pill this tall.
+const PILL_HEIGHT: f64 = 64.0;
+
+/// Where the widget goes. A spot the user dragged it to wins.
+/// Dictation: bottom-centre of the window being dictated into, so it shows up where you're
+/// looking. Assistant: bottom-centre of the screen with the window you're working in.
+/// Both fall back to the screen under the mouse when no window can be found.
+fn place_widget(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
     if let Some(p) = widget_drag::pinned(app) {
         let _ = win.set_position(p);
         return;
     }
-    const MARGIN: f64 = 24.0;
     let (Ok(size), Ok(scale)) = (win.outer_size(), win.scale_factor()) else { return };
     let (w, h) = (size.width as f64 / scale, size.height as f64 / scale);
+    let frame = focus::active_window_frame();
 
-    if let Some((x, y, fw, fh)) = focus::active_window_frame() {
-        // Short windows (e.g. a one-line palette): sit just below them instead of covering them.
-        let top = if fh > h + MARGIN * 3.0 { y + fh - h - MARGIN } else { y + fh + 8.0 };
-        let _ = win.set_position(tauri::LogicalPosition::new(x + (fw - w) / 2.0, top));
-        return;
+    if mode == Mode::Dictation {
+        const MARGIN: f64 = 24.0;
+        if let Some((x, y, fw, fh)) = frame {
+            // Short windows (e.g. a one-line palette): sit just below them instead of covering them.
+            let pill_bottom = if fh > PILL_HEIGHT + MARGIN * 3.0 { y + fh - MARGIN } else { y + fh + 8.0 + PILL_HEIGHT };
+            let _ = win.set_position(tauri::LogicalPosition::new(x + (fw - w) / 2.0, pill_bottom - h));
+            return;
+        }
     }
 
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+    let monitor = frame
+        .and_then(|(x, y, w, h)| monitor_at_point(app, x + w / 2.0, y + h / 2.0))
+        .or_else(|| {
+            app.cursor_position()
+                .ok()
+                .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        })
         .or_else(|| app.primary_monitor().ok().flatten());
     let Some(m) = monitor else {
         mlog!("widget: no monitor found to place it on");
         return;
     };
     let area = m.work_area();
-    let margin = (28.0 * m.scale_factor()) as i32;
+    let margin = ((if mode == Mode::Dictation { 28.0 } else { 20.0 }) * m.scale_factor()) as i32;
     let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
     let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
     let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// The display containing a point in screen points (top-left origin). Monitor frames are in
+/// pixels of their own scale, so each is converted back to points before comparing.
+fn monitor_at_point(app: &AppHandle, x: f64, y: f64) -> Option<tauri::Monitor> {
+    app.available_monitors().ok()?.into_iter().find(|m| {
+        let (s, p, size) = (m.scale_factor(), m.position(), m.size());
+        let (mx, my) = (p.x as f64 / s, p.y as f64 / s);
+        x >= mx && x < mx + size.width as f64 / s && y >= my && y < my + size.height as f64 / s
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -631,7 +535,7 @@ fn hide_widget(win: &WebviewWindow) {
     let _ = win.hide();
 }
 
-/// Opens (or focuses) the main window, optionally on a given tab ("home", "history", "settings").
+/// Opens (or focuses) the main window, optionally on a given tab ("home", "assistant", "history", …).
 /// Murmur stays a menu-bar app (no Dock icon) even while this window is open: macOS only lets
 /// a menu-bar app's floating widget appear on other apps' full-screen Spaces.
 fn open_main_window(app: &AppHandle, tab: Option<&str>) {
@@ -679,8 +583,6 @@ fn open_main_window(app: &AppHandle, tab: Option<&str>) {
     }
 }
 
-/// Opens a file or folder in its default app (Finder for folders). Failures are logged and
-/// returned instead of silently ignored.
 /// Adds NSWindowCollectionBehaviorMoveToActiveSpace to a window.
 #[cfg(target_os = "macos")]
 unsafe fn move_to_active_space(ns_window: *mut std::ffi::c_void) {
@@ -692,6 +594,8 @@ unsafe fn move_to_active_space(ns_window: *mut std::ffi::c_void) {
     let _: () = msg_send![window, setCollectionBehavior: current | MOVE_TO_ACTIVE_SPACE];
 }
 
+/// Opens a file or folder in its default app (Finder for folders). Failures are logged and
+/// returned instead of silently ignored.
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let cmd = "open";
@@ -712,6 +616,19 @@ fn open_path(path: &std::path::Path) -> Result<(), String> {
     Err(error)
 }
 
+/// Opens a file in the default text editor, creating it if needed.
+#[cfg(target_os = "macos")]
+fn open_text_file(path: &std::path::Path) {
+    if !path.exists() {
+        let _ = std::fs::write(path, "");
+    }
+    match std::process::Command::new("open").arg("-t").arg(path).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => mlog!("could not open {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim()),
+        Err(e) => mlog!("could not open {}: {e}", path.display()),
+    }
+}
+
 /// Short, quiet macOS system sound ("Tink", "Pop", …). Non-blocking; no-op elsewhere.
 fn play_sound(name: &str) {
     #[cfg(target_os = "macos")]
@@ -729,6 +646,67 @@ fn widget_log(message: String) {
     mlog!("widget js: {message}");
 }
 
+#[cfg(target_os = "macos")]
+fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        widget_log,
+        widget_drag::widget_hit_rects,
+        widget_drag::widget_drag,
+        commands::get_state,
+        commands::save_config,
+        commands::history_list,
+        commands::history_page,
+        commands::history_delete,
+        commands::history_clear,
+        commands::get_stats,
+        commands::copy_text,
+        commands::set_login,
+        commands::open_privacy,
+        commands::open_data_folder,
+        commands::get_notes,
+        commands::save_notes,
+        commands::request_microphone,
+        commands::download_model,
+        commands::finish_setup,
+        commands::assistant_history_list,
+        commands::assistant_history_page,
+        commands::assistant_history_delete,
+        commands::assistant_history_clear,
+        commands::download_brain,
+        commands::preview_voice,
+        commands::stop_speaking,
+        commands::ask_text,
+        commands::new_conversation,
+        commands::open_voice_settings,
+        commands::confirm_answer,
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        widget_log,
+        widget_drag::widget_hit_rects,
+        widget_drag::widget_drag,
+        commands::get_state,
+        commands::save_config,
+        commands::history_list,
+        commands::history_page,
+        commands::history_delete,
+        commands::history_clear,
+        commands::get_stats,
+        commands::copy_text,
+        commands::set_login,
+        commands::open_privacy,
+        commands::open_data_folder,
+        commands::get_notes,
+        commands::save_notes,
+        commands::request_microphone,
+        commands::download_model,
+        commands::finish_setup,
+    ]
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -736,38 +714,24 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
     let app = builder
-        .invoke_handler(tauri::generate_handler![
-            widget_log,
-            widget_drag::widget_hit_rects,
-            widget_drag::widget_drag,
-            commands::get_state,
-            commands::save_config,
-            commands::history_list,
-            commands::history_delete,
-            commands::history_clear,
-            commands::get_stats,
-            commands::copy_text,
-            commands::set_login,
-            commands::open_privacy,
-            commands::open_data_folder,
-            commands::get_notes,
-            commands::save_notes,
-            commands::request_microphone,
-            commands::download_model,
-            commands::finish_setup,
-        ])
+        .invoke_handler(handlers())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let first_run = !config::config_path().exists();
-            let cfg = config::load();
+            #[allow(unused_mut)]
+            let mut cfg = config::load();
+            // Debug aid: the assistant's answers aren't spoken (not saved to the settings file).
+            if std::env::var_os("MURMUR_QUIET").is_some() {
+                cfg.speak_replies = false;
+            }
             let setup_done = cfg.setup_done;
             // On a fresh install the speech model is downloaded from the setup flow, where the
             // user can pick a smaller one first, instead of silently in the background.
             let wait_for_setup = !setup_done && !model::model_path(&config::data_dir(), &cfg.model).exists();
             #[cfg(target_os = "macos")]
-            fn_key::sync(&cfg.hotkey);
+            fn_key::sync(if cfg.assistant_enabled && cfg.assistant_hotkey == "fn" { "fn" } else { &cfg.hotkey });
 
             use tauri_plugin_autostart::ManagerExt;
             let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
@@ -778,15 +742,22 @@ pub fn run() {
             let login_item = CheckMenuItem::with_id(app, "login", "Start at Login", true, login_enabled, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Murmur", true, Some("CmdOrCtrl+Q"))?;
             let sep = || PredefinedMenuItem::separator(app);
-            let menu = Menu::with_items(
-                app,
-                &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &login_item, &quit],
-            )?;
+            #[cfg(target_os = "macos")]
+            let menu = {
+                let new_chat = MenuItem::with_id(app, "new", "New Conversation", true, Some("CmdOrCtrl+N"))?;
+                let log = MenuItem::with_id(app, "log", "Open Log", true, None::<&str>)?;
+                Menu::with_items(
+                    app,
+                    &[&status, &sep()?, &open_item, &history_item, &copy_last, &new_chat, &sep()?, &log, &login_item, &quit],
+                )?
+            };
+            #[cfg(not(target_os = "macos"))]
+            let menu = Menu::with_items(app, &[&status, &sep()?, &open_item, &history_item, &copy_last, &sep()?, &login_item, &quit])?;
 
             TrayIconBuilder::with_id("murmur")
                 .icon(Image::from_bytes(include_bytes!("../icons/tray.png"))?)
                 .icon_as_template(true)
-                .tooltip("Murmur — local dictation")
+                .tooltip("Murmur — local dictation and assistant")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, ev| match ev.id.as_ref() {
@@ -794,12 +765,16 @@ pub fn run() {
                     "open" => open_main_window(app, Some("home")),
                     "history" => open_main_window(app, Some("history")),
                     "copy_last" => {
-                        let core = app.state::<Arc<Core>>();
-                        let text = core.last_text.lock().unwrap().clone().or_else(history::last_text);
+                        let murmur = app.state::<Arc<Murmur>>();
+                        let text = murmur.dictation.last_text.lock().unwrap().clone().or_else(history::last_text);
                         if let Some(text) = text {
                             let _ = paste::copy(&text);
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    "new" => app.state::<Arc<Murmur>>().assistant.new_conversation(),
+                    #[cfg(target_os = "macos")]
+                    "log" => open_text_file(&config::log_path()),
                     "login" => {
                         let enabled = commands::set_login(app.clone(), !app.autolaunch().is_enabled().unwrap_or(false));
                         let _ = login_item.set_checked(enabled);
@@ -825,26 +800,38 @@ pub fn run() {
                 std::thread::spawn(move || widget_drag::track(handle));
             }
 
-            let core = Arc::new(Core {
+            let shared = Arc::new(Shared {
                 app: app.handle().clone(),
                 cfg: RwLock::new(cfg),
                 recorder: Recorder::new(),
                 transcriber: Mutex::new(None),
-                phase: Mutex::new(Phase::Loading),
-                gesture: Mutex::new(Gesture::default()),
-                last_text: Mutex::new(None),
+                load_lock: Mutex::new(()),
+                loading: AtomicBool::new(true),
+                last_used: Mutex::new(Instant::now()),
+                downloads: Mutex::new(HashMap::new()),
                 status_item: status,
                 status: Mutex::new("Starting…".into()),
-                load_lock: Mutex::new(()),
-                last_used: Mutex::new(Instant::now()),
-                download: Mutex::new(None),
+                widget_shown: AtomicU64::new(0),
+            });
+            let murmur = Arc::new(Murmur {
+                dictation: Arc::new(Dictation::new(shared.clone())),
+                #[cfg(target_os = "macos")]
+                assistant: Arc::new(Assistant::new(shared.clone())),
+                shared: shared.clone(),
             });
 
             let trusted = paste::has_permission(true);
-            mlog!("started v{} — accessibility: {trusted}, hotkey: {}", env!("CARGO_PKG_VERSION"), core.cfg().hotkey);
+            let c = shared.cfg();
+            mlog!(
+                "started v{} — accessibility: {trusted}, dictation key: {}, assistant key: {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                c.hotkey,
+                c.assistant_hotkey,
+                if c.assistant_enabled { "on" } else { "off" }
+            );
             if !trusted {
-                core.set_status("Allow Murmur in Privacy & Security → Accessibility");
-                // Relaunch once permission is granted so the Fn key can be intercepted.
+                shared.set_status("Allow Murmur in Privacy & Security → Accessibility");
+                // Relaunch once permission is granted so the keys can be intercepted.
                 let handle = app.handle().clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(2));
@@ -859,36 +846,48 @@ pub fn run() {
             // `MURMUR_DEMO=<seconds>` waits that long first (default 2).
             if let Some(delay) = std::env::var("MURMUR_DEMO").ok() {
                 let delay = delay.parse::<u64>().unwrap_or(2);
-                let c = core.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(delay));
-                    c.emit("recording", None, None);
-                    c.show_widget();
-                    for i in 0..90 {
-                        let _ = c.app.emit_to("widget", "level", 0.02 + 0.05 * ((i as f32) * 0.4).sin().abs());
-                        std::thread::sleep(Duration::from_millis(33));
-                    }
-                    c.emit("transcribing", None, None);
-                    std::thread::sleep(Duration::from_secs(3));
-                    c.emit("done", None, None);
-                    std::thread::sleep(Duration::from_millis(1500));
-                    if let Some(w) = c.widget() {
-                        hide_widget(&w);
-                    }
-                });
+                let d = murmur.dictation.clone();
+                std::thread::spawn(move || d.demo(delay));
             }
 
             if wait_for_setup {
-                core.set_status("Finish setup to download the speech model");
+                shared.set_status("Finish setup to download the speech model");
             } else {
-                let c = core.clone();
-                std::thread::spawn(move || c.load_model());
+                let s = shared.clone();
+                std::thread::spawn(move || s.load_model());
             }
-            let c = core.clone();
-            std::thread::spawn(move || c.start_hotkey());
-            let c = core.clone();
-            std::thread::spawn(move || c.watch_idle());
-            app.manage(core);
+            #[cfg(target_os = "macos")]
+            {
+                // Load the assistant's AI too, so the first question doesn't wait for it.
+                let a = murmur.assistant.clone();
+                std::thread::spawn(move || {
+                    a.warm_up_llm();
+                    // Debug aid: `MURMUR_ASK="set a 1 minute timer" Murmur` asks as if typed.
+                    if let Ok(question) = std::env::var("MURMUR_ASK") {
+                        std::thread::sleep(Duration::from_secs(1));
+                        if let Err(e) = a.ask_typed(&question) {
+                            mlog!("MURMUR_ASK: {e}");
+                        }
+                    }
+                });
+                // Free the built-in AI's memory after the idle time set in Settings.
+                let a = murmur.assistant.clone();
+                let s = shared.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(30));
+                    if !a.brain.uses_ollama() {
+                        a.brain.local.stop_if_idle(s.cfg().keep_alive_minutes());
+                    }
+                });
+                app.manage(murmur.assistant.clone());
+            }
+            let m = murmur.clone();
+            std::thread::spawn(move || m.start_hotkey());
+            let s = shared.clone();
+            std::thread::spawn(move || s.watch_idle());
+            app.manage(shared);
+            app.manage(murmur.dictation.clone());
+            app.manage(murmur);
             // Onboarding: show the app window on first run or while a permission is missing.
             // Debug aid: `open --env MURMUR_TAB=insights Murmur.app` opens straight onto a page.
             let debug_tab = std::env::var("MURMUR_TAB").ok();
@@ -906,6 +905,13 @@ pub fn run() {
         // Launching Murmur again (Spotlight, Finder, Dock) opens the app window.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => open_main_window(app, None),
+        // Never leave the built-in AI running (and holding memory) after Murmur quits.
+        #[cfg(target_os = "macos")]
+        RunEvent::Exit => {
+            if let Some(a) = app.try_state::<Arc<Assistant>>() {
+                a.brain.local.stop();
+            }
+        }
         _ => {}
     });
 }
@@ -916,6 +922,12 @@ pub fn cli_focus_test() {
     let target = focus::detect();
     mlog!("focus-test → {target:?}");
     println!("{target:?}");
+}
+
+/// Headless check of the brain, actions and voice: `murmur --ask "what's the weather in Pune?"`.
+#[cfg(target_os = "macos")]
+pub fn cli_ask(question: &str) -> anyhow::Result<()> {
+    assistant::cli_ask(question)
 }
 
 /// Headless check of the speech pipeline: `murmur --transcribe file.wav`.

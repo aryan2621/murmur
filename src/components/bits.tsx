@@ -16,11 +16,11 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-/** System Settings–style coloured square with a white glyph. */
-export function IconTile({ icon: Icon, className }: { icon: LucideIcon; className: string }) {
+/** Small clay-tinted square with a glyph, beside section titles. */
+export function IconTile({ icon: Icon, className }: { icon: LucideIcon; className?: string }) {
   return (
-    <span className={cn("grid size-7 shrink-0 place-items-center rounded-[8px] shadow-[inset_0_-1px_0_rgba(0,0,0,0.12)]", className)}>
-      <Icon className="size-4 text-white" strokeWidth={2.25} />
+    <span className={cn("grid size-7 shrink-0 place-items-center rounded-[8px] bg-accent text-accent-foreground", className)}>
+      <Icon className="size-4" strokeWidth={2} />
     </span>
   );
 }

@@ -10,6 +10,14 @@ fn main() {
         }
         return;
     }
+    #[cfg(target_os = "macos")]
+    if args.len() >= 3 && args[1] == "--ask" {
+        if let Err(e) = murmur_lib::cli_ask(&args[2..].join(" ")) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() == 2 && args[1] == "--focus-test" {
         murmur_lib::cli_focus_test();
         return;

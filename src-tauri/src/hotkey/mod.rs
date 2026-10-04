@@ -1,4 +1,4 @@
-//! Global hold-to-talk key listener.
+//! Global hold-to-talk key listener: one listener for every key Murmur uses.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HotkeyEvent {
@@ -10,8 +10,16 @@ pub enum HotkeyEvent {
     Escape,
 }
 
+/// Which of Murmur's keys an event is about.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hotkey {
+    Dictation,
+    Assistant,
+}
+
 /// Returns true when the event was consumed (lets the listener swallow Esc while recording).
-pub type Handler = Box<dyn Fn(HotkeyEvent) -> bool + Send + 'static>;
+/// Esc is offered to each key in turn until one takes it.
+pub type Handler = Box<dyn Fn(Hotkey, HotkeyEvent) -> bool + Send + 'static>;
 
 #[cfg(target_os = "macos")]
 mod macos;

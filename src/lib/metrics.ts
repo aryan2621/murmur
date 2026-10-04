@@ -1,4 +1,4 @@
-// Client-side aggregations over dictation history.
+// Client-side aggregations over dictation history (see also assistant/metrics.ts).
 import { wordCount, type Entry } from "@/lib/api";
 
 export const DAY = 86_400_000;
@@ -23,8 +23,8 @@ export function wordsPerDay(entries: Entry[], days: number, now = Date.now()) {
   return out;
 }
 
-/** Consecutive days with at least one dictation, counting back from today (or yesterday). */
-export function streak(entries: Entry[], now = Date.now()) {
+/** Consecutive days with at least one entry, counting back from today (or yesterday). */
+export function streak(entries: { time: string }[], now = Date.now()) {
   const days = new Set(entries.map((e) => dayKey(new Date(e.time))));
   let start = days.has(dayKey(new Date(now))) ? 0 : 1;
   let n = 0;

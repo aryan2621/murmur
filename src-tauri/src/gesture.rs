@@ -1,5 +1,6 @@
-//! Timing rules that turn raw hotkey presses into intents: hold-to-talk, ignored taps,
-//! and double-tap to lock hands-free recording.
+//! Timing rules that turn raw hotkey presses into intents. Dictation: hold-to-talk, ignored
+//! taps, and double-tap to lock hands-free recording. Assistant: hold for a quick question, tap
+//! for a conversation.
 
 use std::time::Duration;
 
@@ -18,6 +19,10 @@ pub enum ReleaseAction {
     DiscardTap,
     /// Second tap of a double-tap: keep recording hands-free until the next press.
     LockHandsFree,
+}
+
+pub fn is_tap(held_for: Duration) -> bool {
+    held_for < TAP_MAX
 }
 
 /// `gap_before_press` is the time between the previous tap's release and this press.

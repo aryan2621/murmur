@@ -1,10 +1,14 @@
-//! Commands invoked by the main app window (Home / History / Settings).
+//! Commands invoked by the main app window (Home / Assistant / Insights / History / Settings).
 
 use crate::config::{self, Config};
-use crate::{audio, history, model, paste, Core};
+use crate::{audio, history, model, paste, Shared};
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+#[cfg(target_os = "macos")]
+use crate::assistant::{self, Assistant};
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
 
 #[derive(Serialize)]
 pub struct ModelInfo {
@@ -38,6 +42,37 @@ pub struct Permissions {
     microphone: &'static str,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Serialize)]
+pub struct BrainInfo {
+    #[serde(flatten)]
+    model: &'static model::BrainModel,
+    downloaded: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Serialize)]
+pub struct OllamaState {
+    running: bool,
+    models: Vec<String>,
+    error: Option<String>,
+}
+
+/// What the assistant needs shown: its AI, voices, and why it can't answer (if it can't).
+#[cfg(target_os = "macos")]
+#[derive(Serialize)]
+pub struct AssistantState {
+    unavailable: Option<String>,
+    brain_ready: bool,
+    brain_label: &'static str,
+    brain_size_mb: u32,
+    ollama: OllamaState,
+    voices: Vec<assistant::speech::Voice>,
+    /// The built-in AI models to choose from, and the Mac's memory to choose by.
+    brains: Vec<BrainInfo>,
+    ram_gb: u32,
+}
+
 #[derive(Serialize)]
 pub struct AppState {
     config: Config,
@@ -45,6 +80,8 @@ pub struct AppState {
     model_loaded: bool,
     /// Download progress (0–1) while the speech model is downloading.
     model_progress: Option<f32>,
+    /// Download progress (0–1) of the speech ("speech") and AI ("brain") models.
+    downloads: std::collections::HashMap<&'static str, f32>,
     permissions: Permissions,
     models: Vec<ModelInfo>,
     devices: Vec<String>,
@@ -52,6 +89,11 @@ pub struct AppState {
     login_enabled: bool,
     version: &'static str,
     data_dir: String,
+    /// `None` where there is no assistant (Windows).
+    #[cfg(target_os = "macos")]
+    assistant: Option<AssistantState>,
+    #[cfg(not(target_os = "macos"))]
+    assistant: Option<()>,
 }
 
 #[derive(Serialize)]
@@ -78,15 +120,44 @@ fn hotkeys() -> Vec<Choice> {
     }
 }
 
-#[tauri::command]
-pub fn get_state(app: AppHandle, core: State<'_, Arc<Core>>) -> AppState {
-    use tauri_plugin_autostart::ManagerExt;
-    let cfg = core.cfg();
+#[cfg(target_os = "macos")]
+fn assistant_state(a: &Assistant, cfg: &Config) -> AssistantState {
     let dir = config::data_dir();
+    let ollama = if cfg.brain == "ollama" {
+        match a.brain.ollama.models() {
+            Ok(models) => OllamaState { running: true, models, error: None },
+            Err(e) => OllamaState { running: false, models: vec![], error: Some(e.to_string()) },
+        }
+    } else {
+        OllamaState { running: false, models: vec![], error: None }
+    };
+    AssistantState {
+        unavailable: a.unavailable(),
+        brain_ready: model::brain_path(&dir, &cfg.builtin_model).exists(),
+        brain_label: model::brain(&cfg.builtin_model).label,
+        brain_size_mb: model::brain(&cfg.builtin_model).size_mb,
+        ollama,
+        voices: assistant::speech::voices(),
+        brains: model::BRAINS.iter().map(|b| BrainInfo { model: b, downloaded: model::brain_path(&dir, b.id).exists() }).collect(),
+        ram_gb: model::ram_gb(),
+    }
+}
+
+#[tauri::command]
+pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
+    use tauri_plugin_autostart::ManagerExt;
+    let cfg = shared.cfg();
+    let dir = config::data_dir();
+    let downloads = shared.downloads.lock().unwrap().clone();
     AppState {
-        status: core.status.lock().unwrap().clone(),
-        model_loaded: core.transcriber.lock().unwrap().is_some(),
-        model_progress: *core.download.lock().unwrap(),
+        status: shared.status.lock().unwrap().clone(),
+        model_loaded: shared.model_loaded(),
+        model_progress: downloads.get("speech").copied(),
+        downloads,
+        #[cfg(target_os = "macos")]
+        assistant: Some(assistant_state(&app.state::<Arc<Assistant>>(), &cfg)),
+        #[cfg(not(target_os = "macos"))]
+        assistant: None,
         permissions: Permissions { accessibility: paste::has_permission(false), microphone: microphone_status() },
         models: MODELS
             .iter()
@@ -107,25 +178,34 @@ pub fn get_state(app: AppHandle, core: State<'_, Arc<Core>>) -> AppState {
     }
 }
 
-/// Saves and applies settings. A hotkey change restarts the app (the key tap is set up once);
+/// Saves and applies settings. A key change restarts the app (the key tap is set up once);
 /// a model change downloads/loads it in the background; everything else applies immediately.
 #[tauri::command]
-pub fn save_config(app: AppHandle, core: State<'_, Arc<Core>>, config: Config) -> Result<SaveResult, String> {
-    let old = core.cfg();
+pub fn save_config(app: AppHandle, shared: State<'_, Arc<Shared>>, config: Config) -> Result<SaveResult, String> {
+    if config.assistant_enabled && config.assistant_hotkey == config.hotkey {
+        return Err("Dictation and the assistant need different keys".into());
+    }
+    let old = shared.cfg();
     config::save(&config).map_err(|e| e.to_string())?;
-    *core.cfg.write().unwrap() = config.clone();
-    let restarting = old.hotkey != config.hotkey;
+    *shared.cfg.write().unwrap() = config.clone();
+    #[cfg(target_os = "macos")]
+    app.state::<Arc<Assistant>>().inner().configure(&old, &config);
+    let restarting = old.hotkey != config.hotkey
+        || old.assistant_enabled != config.assistant_enabled
+        || (config.assistant_enabled && old.assistant_hotkey != config.assistant_hotkey);
     let reloading_model = old.model != config.model && !restarting;
     if restarting {
-        mlog!("hotkey changed to {}, restarting", config.hotkey);
+        mlog!("keys changed (dictation {}, assistant {}), restarting", config.hotkey, config.assistant_hotkey);
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(400));
             app.restart();
         });
     } else if reloading_model {
         mlog!("model changed to {}", config.model);
-        let core = core.inner().clone();
-        std::thread::spawn(move || core.load_model());
+        let shared = shared.inner().clone();
+        std::thread::spawn(move || shared.load_model());
+    } else {
+        shared.ready_status();
     }
     Ok(SaveResult { restarting, reloading_model })
 }
@@ -134,6 +214,21 @@ pub fn save_config(app: AppHandle, core: State<'_, Arc<Core>>, config: Config) -
 #[tauri::command]
 pub fn history_list(query: String, limit: Option<usize>) -> Vec<history::Entry> {
     history::search(&query, limit.unwrap_or(500))
+}
+
+/// One page of history for the History page.
+#[derive(Serialize)]
+pub struct HistoryPage<T> {
+    entries: Vec<T>,
+    /// Matches in all, to count the pages.
+    total: usize,
+}
+
+/// Page `page` (from 0) of `page_size` dictations matching `query`, newest first.
+#[tauri::command]
+pub fn history_page(query: String, page: usize, page_size: usize) -> HistoryPage<history::Entry> {
+    let (entries, total) = history::page(&query, page, page_size.max(1));
+    HistoryPage { entries, total }
 }
 
 #[tauri::command]
@@ -239,24 +334,113 @@ pub fn request_microphone() {
 }
 
 /// Setup's download step: saves the chosen model and downloads/loads it in the background.
-/// Progress arrives as `model-progress` events.
+/// Progress arrives as `download-progress` events.
 #[tauri::command]
-pub fn download_model(core: State<'_, Arc<Core>>, model: String) -> Result<(), String> {
-    let mut cfg = core.cfg();
+pub fn download_model(shared: State<'_, Arc<Shared>>, model: String) -> Result<(), String> {
+    let mut cfg = shared.cfg();
     cfg.model = model;
     config::save(&cfg).map_err(|e| e.to_string())?;
-    *core.cfg.write().unwrap() = cfg;
-    let core = core.inner().clone();
-    std::thread::spawn(move || core.load_model());
+    *shared.cfg.write().unwrap() = cfg;
+    let shared = shared.inner().clone();
+    std::thread::spawn(move || shared.load_model());
     Ok(())
 }
 
+/// Setup is complete (or skipped): don't show it on launch again.
 #[tauri::command]
-pub fn finish_setup(core: State<'_, Arc<Core>>) -> Result<(), String> {
-    let mut cfg = core.cfg();
+pub fn finish_setup(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    let mut cfg = shared.cfg();
     cfg.setup_done = true;
     config::save(&cfg).map_err(|e| e.to_string())?;
-    *core.cfg.write().unwrap() = cfg;
+    *shared.cfg.write().unwrap() = cfg;
+    if !shared.loading() {
+        shared.ready_status();
+    }
+    Ok(())
+}
+
+// ---- Assistant ----
+
+/// Downloads the assistant's built-in AI (progress arrives as `download-progress`).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn download_brain(assistant: State<'_, Arc<Assistant>>) {
+    assistant.inner().download_brain();
+}
+
+/// Says a sample sentence in `voice` so it can be compared before choosing it.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn preview_voice(assistant: State<'_, Arc<Assistant>>, voice: String, rate: u32) {
+    let short = voice.split(" (").next().unwrap_or(&voice);
+    let text = format!("Hi, I'm {short}. Your meeting is at three thirty, and it may rain this evening.");
+    assistant.speaker.preview(&voice, rate, &text);
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn stop_speaking(assistant: State<'_, Arc<Assistant>>) {
+    assistant.inner().stop_all();
+}
+
+/// Asks a typed question; the answer streams back through the `reply` event and is spoken.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn ask_text(assistant: State<'_, Arc<Assistant>>, question: String) -> Result<(), String> {
+    assistant.inner().ask_typed(question.trim()).map_err(|e| e.to_string())
+}
+
+/// The widget's Yes / No buttons while the assistant asks before a risky action.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn confirm_answer(assistant: State<'_, Arc<Assistant>>, yes: bool) {
+    if let Some(tx) = assistant.pending_confirm.lock().unwrap().as_ref() {
+        let _ = tx.send(yes);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn new_conversation(assistant: State<'_, Arc<Assistant>>) {
+    assistant.inner().new_conversation();
+}
+
+/// Opens System Settings where Premium / Enhanced voices can be downloaded.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn open_voice_settings() {
+    let url = "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent";
+    let _ = std::process::Command::new("open").arg(url).spawn();
+}
+
+/// The assistant's questions and answers, newest first. `limit` defaults to 500.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn assistant_history_list(query: String, limit: Option<usize>) -> Vec<assistant::history::Entry> {
+    assistant::history::search(&query, limit.unwrap_or(500))
+}
+
+/// Page `page` (from 0) of `page_size` questions and answers matching `query`, newest first.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn assistant_history_page(query: String, page: usize, page_size: usize) -> HistoryPage<assistant::history::Entry> {
+    let (entries, total) = assistant::history::page(&query, page, page_size.max(1));
+    HistoryPage { entries, total }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn assistant_history_delete(app: AppHandle, time: String) -> Result<(), String> {
+    assistant::history::delete(&time).map_err(|e| e.to_string())?;
+    let _ = app.emit_to("main", "history-updated", ());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn assistant_history_clear(app: AppHandle) -> Result<(), String> {
+    assistant::history::clear().map_err(|e| e.to_string())?;
+    let _ = app.emit_to("main", "history-updated", ());
     Ok(())
 }
 

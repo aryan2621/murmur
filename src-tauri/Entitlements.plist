@@ -5,5 +5,10 @@
   <!-- Hardened runtime blocks the microphone (silently, without a prompt) unless this is present. -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- Actions: controlling other apps (Music, Reminders, browsers) and reading the calendar. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
 </dict>
 </plist>

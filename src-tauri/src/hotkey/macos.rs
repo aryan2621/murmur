@@ -6,7 +6,7 @@
 //! That needs Accessibility permission; without it we fall back to a listen-only tap
 //! (Input Monitoring), where the user must set "Press 🌐 key to" → Do Nothing.
 
-use super::{Handler, HotkeyEvent};
+use super::{Handler, Hotkey, HotkeyEvent};
 use anyhow::{anyhow, Result};
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -52,10 +52,15 @@ const KEYCODE_FN: i64 = 63;
 const KEYCODE_GLOBE: i64 = 179;
 const KEYCODE_ESCAPE: i64 = 53;
 
-struct Ctx {
+struct Binding {
+    id: Hotkey,
     keycode: i64,
     flag: u64,
     held: Cell<bool>,
+}
+
+struct Ctx {
+    keys: Vec<Binding>,
     tap: Cell<Ptr>,
     /// True when the tap is active and may drop events.
     swallow: Cell<bool>,
@@ -81,14 +86,14 @@ extern "C" fn callback(_proxy: Ptr, etype: u32, event: Ptr, user: Ptr) -> Ptr {
         TAP_DISABLED_TIMEOUT | TAP_DISABLED_USER => unsafe { CGEventTapEnable(ctx.tap.get(), true) },
         FLAGS_CHANGED => {
             let code = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) };
-            if code == ctx.keycode {
-                let down = unsafe { CGEventGetFlags(event) } & ctx.flag != 0;
-                if down && !ctx.held.get() {
-                    ctx.held.set(true);
-                    (ctx.handler)(HotkeyEvent::Pressed);
-                } else if !down && ctx.held.get() {
-                    ctx.held.set(false);
-                    (ctx.handler)(HotkeyEvent::Released);
+            if let Some(key) = ctx.keys.iter().find(|k| k.keycode == code) {
+                let down = unsafe { CGEventGetFlags(event) } & key.flag != 0;
+                if down && !key.held.get() {
+                    key.held.set(true);
+                    (ctx.handler)(key.id, HotkeyEvent::Pressed);
+                } else if !down && key.held.get() {
+                    key.held.set(false);
+                    (ctx.handler)(key.id, HotkeyEvent::Released);
                 }
                 if ctx.swallow.get() {
                     return drop_it;
@@ -97,19 +102,23 @@ extern "C" fn callback(_proxy: Ptr, etype: u32, event: Ptr, user: Ptr) -> Ptr {
         }
         KEY_DOWN | KEY_UP => {
             let code = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) };
-            if code == KEYCODE_GLOBE && ctx.keycode == KEYCODE_FN && ctx.swallow.get() {
+            if code == KEYCODE_GLOBE && ctx.keys.iter().any(|k| k.keycode == KEYCODE_FN) && ctx.swallow.get() {
                 return drop_it;
             }
             if etype == KEY_DOWN {
                 if code == KEYCODE_ESCAPE {
-                    // Only swallowed when it actually cancelled a recording.
-                    if (ctx.handler)(HotkeyEvent::Escape) && ctx.swallow.get() {
-                        ctx.held.set(false);
-                        return drop_it;
+                    // Only swallowed when it actually cancelled something.
+                    for key in &ctx.keys {
+                        if (ctx.handler)(key.id, HotkeyEvent::Escape) && ctx.swallow.get() {
+                            key.held.set(false);
+                            return drop_it;
+                        }
                     }
-                } else if ctx.held.get() {
-                    ctx.held.set(false);
-                    (ctx.handler)(HotkeyEvent::Cancelled);
+                } else {
+                    for key in ctx.keys.iter().filter(|k| k.held.get()) {
+                        key.held.set(false);
+                        (ctx.handler)(key.id, HotkeyEvent::Cancelled);
+                    }
                 }
             }
         }
@@ -118,18 +127,19 @@ extern "C" fn callback(_proxy: Ptr, etype: u32, event: Ptr, user: Ptr) -> Ptr {
     event
 }
 
-/// Starts the listener on its own run-loop thread. Errors if the key is unknown or neither
-/// Accessibility nor Input Monitoring permission has been granted yet.
-pub fn start(key: &str, handler: Handler) -> Result<()> {
-    let (keycode, flag) = key_spec(key)?;
+/// Starts one listener for all `keys` on its own run-loop thread. Errors if a key is unknown or
+/// neither Accessibility nor Input Monitoring permission has been granted yet.
+pub fn start(keys: &[(String, Hotkey)], handler: Handler) -> Result<()> {
+    let keys = keys
+        .iter()
+        .map(|(name, id)| key_spec(name).map(|(keycode, flag)| Binding { id: *id, keycode, flag, held: Cell::new(false) }))
+        .collect::<Result<Vec<_>>>()?;
     let (tx, rx) = mpsc::channel::<Result<()>>();
 
     std::thread::Builder::new().name("murmur-hotkey".into()).spawn(move || unsafe {
         CGRequestListenEventAccess();
         let ctx = Box::into_raw(Box::new(Ctx {
-            keycode,
-            flag,
-            held: Cell::new(false),
+            keys,
             tap: Cell::new(std::ptr::null_mut()),
             swallow: Cell::new(true),
             handler,

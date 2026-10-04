@@ -1,7 +1,7 @@
 [package]
 name = "murmur"
 version = "0.1.0"
-description = "Private, local voice dictation"
+description = "Private, local voice dictation and assistant"
 edition = "2021"
 
 [lib]
@@ -23,7 +23,7 @@ regex = "1"
 chrono = "0.4"
 dirs = "6"
 tauri-plugin-autostart = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
@@ -32,7 +32,9 @@ tauri-nspanel = "2.1"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString", "NSDate", "NSError", "NSURL", "NSDictionary"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["std", "VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-foundation"] }
+objc2-event-kit = { version = "0.3", default-features = false, features = ["std", "block2", "EKEventStore", "EKEvent", "EKCalendarItem", "EKObject", "EKTypes", "EKCalendar"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = "0.16"

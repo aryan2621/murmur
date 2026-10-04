@@ -16,8 +16,8 @@
       {
         "label": "widget",
         "url": "widget.html",
-        "width": 240,
-        "height": 64,
+        "width": 460,
+        "height": 190,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

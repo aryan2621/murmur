@@ -52,7 +52,12 @@ impl Recorder {
     }
 
     /// Starts recording from `device` (input device name, or `None` for the system default) and
-    /// returns at once with where the outcome will arrive. Opening the mic takes
+    /// waits until the mic is open.
+    pub fn start(&self, device: Option<String>, on_level: LevelFn) -> Result<()> {
+        self.start_async(device, on_level).recv()?
+    }
+
+    /// Like `start`, but returns at once with where the outcome will arrive. Opening the mic takes
     /// a moment; the hotkey's own thread must not wait for it, or a quick tap's release is only
     /// seen after that and taken for a hold. Commands are handled in order, so a `stop` sent
     /// meanwhile still comes after this start.

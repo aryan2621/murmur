@@ -5,15 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Murmur</title>
   <style>
+    /* Claude's dark palette: warm charcoal, paper text, a clay accent. */
     :root {
-      --bg: rgba(18, 18, 22, 0.92);
-      --border: rgba(255, 255, 255, 0.10);
-      --fg: #f4f4f6;
-      --muted: #a1a1aa;
-      --accent: #a78bfa;
-      --accent-2: #f472b6;
-      --error: #f87171;
-      --ok: #4ade80;
+      --bg: rgba(38, 38, 36, 0.95);
+      --border: rgba(245, 244, 239, 0.10);
+      --fg: #f5f4ef;
+      --muted: #a8a69d;
+      --accent: #d97757;
+      --accent-2: #e9b48c;
+      --error: #ec8a80;
+      --ok: #8fc18a;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
@@ -26,12 +27,45 @@
       -webkit-user-select: none;
       cursor: default;
     }
-    body { display: flex; align-items: center; justify-content: center; }
+    /* The window is fixed-size; content sits at the bottom and the assistant's card grows upwards. */
+    body { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px; }
+
+    .card {
+      width: 100%;
+      padding: 12px 15px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      opacity: 0; transform: translateY(6px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .card.visible { opacity: 1; transform: none; cursor: grab; }
+    .question {
+      color: var(--muted); font-size: 12px; line-height: 1.35;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 6px;
+    }
+    /* Shows the newest four lines of a long answer. */
+    .reply {
+      font-size: 14px; line-height: 1.45; font-weight: 450;
+      max-height: calc(1.45em * 4); overflow: hidden;
+      user-select: text;
+    }
+    .reply.thinking {
+      color: var(--muted);
+      background: linear-gradient(90deg, var(--muted) 30%, var(--fg) 50%, var(--muted) 70%);
+      background-size: 200% 100%;
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+      animation: shimmer 1.6s linear infinite;
+    }
+    @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
     .pill {
+      flex: none;
       height: 44px;
       min-width: 120px;
-      max-width: 228px;
+      max-width: 300px;
       padding: 0 16px;
       display: flex; align-items: center; gap: 10px;
       background: var(--bg);
@@ -46,32 +80,46 @@
 
     .dot {
       flex: none; width: 8px; height: 8px; border-radius: 50%;
-      background: var(--accent-2);
-      box-shadow: 0 0 0 0 rgba(244, 114, 182, .6);
+      background: var(--accent);
       animation: pulse 1.4s infinite;
     }
     @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(244, 114, 182, .55); }
-      70% { box-shadow: 0 0 0 7px rgba(244, 114, 182, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(244, 114, 182, 0); }
+      0% { box-shadow: 0 0 0 0 rgba(217, 119, 87, .55); }
+      70% { box-shadow: 0 0 0 7px rgba(217, 119, 87, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(217, 119, 87, 0); }
     }
 
     canvas { flex: none; width: 140px; height: 26px; }
 
-    .label {
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      color: var(--muted);
-    }
+    .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
     .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; min-width: 50px; }
     .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s; }
 
     .icon { flex: none; width: 16px; height: 16px; }
     .hidden { display: none !important; }
-    .error .label { color: var(--error); }
+    .error .label { color: var(--error); white-space: normal; line-height: 1.3; font-size: 12px; }
+    .pill.error { height: auto; min-height: 44px; padding: 8px 16px; border-radius: 18px; }
     .ok .label { color: var(--fg); }
+    /* Asking before a risky action: Yes / No under the question. */
+    .confirm { display: flex; gap: 8px; margin-top: 10px; }
+    .confirm button {
+      flex: 1; height: 30px; border-radius: 10px; cursor: pointer;
+      font: 600 13px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      color: var(--fg); background: rgba(255,255,255,.08); border: 1px solid var(--border);
+    }
+    .confirm button.yes { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .confirm button:hover { filter: brightness(1.1); }
   </style>
 </head>
 <body>
+  <div class="card hidden" id="card">
+    <div class="question" id="question"></div>
+    <div class="reply" id="reply"></div>
+    <div class="confirm hidden" id="confirm">
+      <button class="yes" id="yes">Yes</button>
+      <button id="no">No</button>
+    </div>
+  </div>
   <div class="pill" id="pill">
     <span class="dot" id="dot"></span>
     <canvas id="wave" width="280" height="52"></canvas>
@@ -83,16 +131,16 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const pill = $("pill"), dot = $("dot"), wave = $("wave"), label = $("label"), bar = $("bar"), barFill = $("barFill"), icon = $("icon");
+    const card = $("card"), question = $("question"), reply = $("reply"), confirmRow = $("confirm");
     const ctx = wave.getContext("2d");
 
     // --- Waveform -------------------------------------------------------------------
     // "recording": bars follow live mic levels.
-    // "wave": while transcribing, bars ease from their last heights into a travelling
-    //         sine wave with a purple → pink colour sweep.
+    // "wave": while transcribing/working/speaking, bars ease into a travelling sine wave.
     const BARS = 28, EASE_MS = 220;
-    const PURPLE = [167, 139, 250], PINK = [244, 114, 182];
+    const CLAY = [217, 119, 87], SAND = [233, 180, 140];
     let levels = new Array(BARS).fill(0);
-    let mode = "idle", raf = 0, waveStart = 0, waveFrom = levels.slice();
+    let mode = "idle", raf = 0, waveStart = 0, waveFrom = levels.slice(), waveSpeed = 1;
 
     const mix = (a, b, t) => `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * t)).join(",")})`;
 
@@ -103,12 +151,12 @@
       for (let i = 0; i < BARS; i++) {
         let v = levels[i], c = i / (BARS - 1);
         if (mode === "wave") {
-          const target = 0.18 + 0.5 * (1 + Math.sin(t * 0.0065 - i * 0.42)) / 2;
+          const target = 0.18 + 0.5 * (1 + Math.sin(t * 0.0065 * waveSpeed - i * 0.42)) / 2;
           v = waveFrom[i] * (1 - blend) + target * blend;
           c = (1 + Math.sin(t * 0.004 - i * 0.28)) / 2;
         }
         const bh = Math.max(4, v * h);
-        ctx.fillStyle = mix(PURPLE, PINK, c);
+        ctx.fillStyle = mix(CLAY, SAND, c);
         ctx.beginPath();
         ctx.roundRect(i * (bw + gap), (h - bh) / 2, bw, bh, bw / 2);
         ctx.fill();
@@ -116,8 +164,9 @@
       if (mode !== "idle") raf = requestAnimationFrame(frame);
     }
 
-    function animate(next) {
+    function animate(next, speed = 1) {
       cancelAnimationFrame(raf);
+      waveSpeed = speed;
       if (next === "wave" && mode !== "wave") {
         waveFrom = levels.slice();
         waveStart = performance.now();
@@ -132,10 +181,11 @@
 
     // --- State rendering -------------------------------------------------------------
     const ICONS = {
-      ok: '<path d="M3 8.5l3 3 7-7" stroke="#4ade80"/>',
-      error: '<circle cx="8" cy="8" r="6.5" stroke="#f87171"/><path d="M8 4.8v3.6M8 11.2v.01" stroke="#f87171"/>',
-      clip: '<rect x="4" y="3" width="8" height="10.5" rx="1.5" stroke="#c4b5fd"/><path d="M6 3V2.2h4V3M6.3 7.5h3.4M6.3 10h3.4" stroke="#c4b5fd"/>',
-      lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5" stroke="#c4b5fd"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" stroke="#c4b5fd"/>',
+      ok: '<path d="M3 8.5l3 3 7-7" stroke="#8fc18a"/>',
+      error: '<circle cx="8" cy="8" r="6.5" stroke="#ec8a80"/><path d="M8 4.8v3.6M8 11.2v.01" stroke="#ec8a80"/>',
+      chat: '<path d="M2.5 4.5a2 2 0 012-2h7a2 2 0 012 2v4.5a2 2 0 01-2 2H7l-3 2.5v-2.5h0a2 2 0 01-1.5-2z" stroke="#e9b48c"/>',
+      clip: '<rect x="4" y="3" width="8" height="10.5" rx="1.5" stroke="#e9b48c"/><path d="M6 3V2.2h4V3M6.3 7.5h3.4M6.3 10h3.4" stroke="#e9b48c"/>',
+      lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5" stroke="#e9b48c"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" stroke="#e9b48c"/>',
     };
 
     function show(parts) {
@@ -151,21 +201,31 @@
       reportHitRects();
     }
 
-    function setState({ state, message, progress }) {
+    function showCard(q, text, thinking) {
+      if (q == null) {
+        card.className = "card hidden";
+        reportHitRects();
+        return;
+      }
+      question.textContent = q ? `“${q}”` : "";
+      reply.textContent = thinking ? text || "Thinking…" : text;
+      reply.className = "reply" + (thinking ? " thinking" : "");
+      card.className = "card visible";
+      reply.scrollTop = reply.scrollHeight;
+      reportHitRects();
+    }
+
+    // `kind` is "dictation" or "assistant": dictation never shows the answer card.
+    function setState({ mode: kind, state, message, progress, question: q, reply: text }) {
+      confirmRow.classList.toggle("hidden", state !== "confirm");
+      if (kind !== "assistant") showCard(null);
       switch (state) {
-        case "recording":
-          show({ dot: true, wave: true });
-          animate("recording");
-          break;
-        case "locked": // hands-free: keeps listening until the next Fn press
+        case "locked": // dictation hands-free: keeps listening until the next press
           show({ icon: "lock", wave: true });
           animate("recording");
           break;
-        case "transcribing":
-          show({ wave: true });
-          animate("wave");
-          break;
-        case "done":
+        case "done": // dictation typed it in; the assistant's finished answer just stays up
+          if (kind === "assistant") break;
           animate("idle");
           show({ icon: "ok", cls: "ok compact" });
           break;
@@ -177,15 +237,46 @@
           animate("idle");
           show({ icon: "ok", label: "Pasted · also copied", cls: "ok" });
           break;
+        case "confirm": // `message` is the question, e.g. "Move report.pdf to the Trash?"
+          showCard("", message || "Are you sure?", false);
+          show({ icon: "chat", wave: true, label: "Say yes or no" });
+          animate("recording");
+          break;
+        case "recording":
+          showCard(null);
+          show({ dot: true, wave: true });
+          animate("recording");
+          break;
+        case "listening": // conversation mode: a pause sends it; the last answer stays up
+          show({ icon: "chat", wave: true, label: "Listening" });
+          animate("recording");
+          break;
+        case "transcribing":
+          show({ wave: true });
+          animate("wave");
+          break;
+        case "thinking": // `text` says what it's doing, e.g. "Searching the web…"
+          showCard(q, text || "", true);
+          show({ wave: true });
+          animate("wave");
+          break;
+        case "speaking":
+          showCard(q, text || "", false);
+          show({ wave: true });
+          animate("wave", 0.6);
+          break;
         case "downloading":
+          showCard(null);
           animate("idle");
           show({ label: message || "Downloading model…", progress: progress ?? 0 });
           break;
         case "ready":
+          showCard(null);
           animate("idle");
           show({ icon: "ok", label: message || "Ready", cls: "ok" });
           break;
         case "error":
+          showCard(null);
           animate("idle");
           show({ icon: "error", label: message || "Something went wrong", cls: "error" });
           break;
@@ -198,7 +289,7 @@
     // --- Dragging ------------------------------------------------------------------------
     // The window lets clicks through except over these parts, so it reports where they are;
     // pressing on one drags the widget (it then stays there until reset from the menu bar).
-    const draggable = [pill];
+    const draggable = [card, pill];
     function reportHitRects() {
       const rects = draggable
         .filter((el) => el.classList.contains("visible"))
@@ -210,10 +301,17 @@
     const resized = new ResizeObserver(reportHitRects);
     draggable.forEach((el) => resized.observe(el));
     document.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || !draggable.some((el) => el.contains(e.target))) return;
+      if (e.button !== 0 || e.target.closest("button") || !draggable.some((el) => el.contains(e.target))) return;
       e.preventDefault();
       window.__TAURI__.core.invoke("widget_drag").catch((err) => log(`drag failed: ${err}`));
     });
+
+    const answer = (yes) => {
+      confirmRow.classList.add("hidden");
+      window.__TAURI__.core.invoke("confirm_answer", { yes }).catch((err) => log(`confirm failed: ${err}`));
+    };
+    $("yes").addEventListener("click", () => answer(true));
+    $("no").addEventListener("click", () => answer(false));
 
     const { listen } = window.__TAURI__.event;
     listen("widget-state", (e) => {

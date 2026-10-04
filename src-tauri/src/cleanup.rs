@@ -30,6 +30,16 @@ const HALLUCINATIONS: &[&str] = &[
 ];
 
 pub fn clean(raw: &str, remove_fillers: bool) -> String {
+    tidy(raw, remove_fillers, true)
+}
+
+/// A spoken question for the assistant. Only an explicit am/pm suffix identifies a time there:
+/// "at 10.30" can be a price.
+pub fn clean_question(raw: &str) -> String {
+    tidy(raw, true, false)
+}
+
+fn tidy(raw: &str, remove_fillers: bool, times_after_words: bool) -> String {
     let mut s = TAGS.replace_all(raw, " ").into_owned();
     if remove_fillers {
         s = FILLERS.replace_all(&s, "").into_owned();
@@ -39,7 +49,9 @@ pub fn clean(raw: &str, remove_fillers: bool) -> String {
             .into_owned();
         s = dedupe_words(&s);
     }
-    s = TIME_AFTER_WORD.replace_all(&s, "$1 $2:$3").into_owned();
+    if times_after_words {
+        s = TIME_AFTER_WORD.replace_all(&s, "$1 $2:$3").into_owned();
+    }
     s = TIME_BEFORE_AMPM.replace_all(&s, "$1:$2$3$4").into_owned();
     s = SPACE_BEFORE_PUNCT.replace_all(&s, "$1").into_owned();
     s = DOUBLE_COMMA.replace_all(&s, "$1").into_owned();

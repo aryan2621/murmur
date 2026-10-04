@@ -12,9 +12,21 @@ export function useAppState() {
       setState((s) => (s ? { ...s, status } : s));
       if (status.startsWith("Ready")) refresh();
     });
+    // Download progress (speech and AI models), so every page shows it live.
+    const unProgress = events.downloadProgress(({ model, progress }) => {
+      setState((s) => {
+        if (!s) return s;
+        const downloads = { ...s.downloads };
+        if (progress === null) delete downloads[model];
+        else downloads[model] = progress;
+        return { ...s, downloads, model_progress: model === "speech" ? progress : s.model_progress };
+      });
+      if (progress === null) refresh();
+    });
     window.addEventListener("focus", refresh);
     return () => {
       unStatus.then((u) => u());
+      unProgress.then((u) => u());
       window.removeEventListener("focus", refresh);
     };
   }, [refresh]);

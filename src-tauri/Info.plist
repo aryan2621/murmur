@@ -3,7 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Murmur listens only while you hold the dictation key, and transcribes on this Mac.</string>
+  <string>Murmur listens only while you hold its keys, and understands you on this Mac.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Murmur's assistant controls apps when you ask it to: your browser's tabs, music, reminders and dark mode.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Murmur's assistant reads your calendar when you ask what's coming up. It stays on this Mac.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Murmur's assistant reads your calendar when you ask what's coming up. It stays on this Mac.</string>
   <key>LSUIElement</key>
   <true/>
 </dict>
