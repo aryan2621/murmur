@@ -13,7 +13,6 @@ export interface Config {
   language: string;
   translate: boolean;
   input_device: string | null;
-  echo_cancellation: boolean;
   vocabulary: string[];
   replacements: Replacement[];
   remove_fillers: boolean;

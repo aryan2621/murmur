@@ -32,7 +32,7 @@ function makeHistory(): Entry[] {
 const history = makeHistory();
 let notes = "Ideas for the offsite:\n- team dinner on Thursday\n- one hour for demos";
 let config: Config = {
-  hotkey: "fn", model: "large-v3-turbo-q5_0", language: "en", translate: false, input_device: null, echo_cancellation: true,
+  hotkey: "fn", model: "large-v3-turbo-q5_0", language: "en", translate: false, input_device: null,
   vocabulary: ["Acme Corp", "Kubernetes"], replacements: [{ from: "acme corp", to: "Acme Corp" }], remove_fillers: true,
   restore_clipboard: true, save_history: true, sounds: true, unload_after_minutes: 0,
   // `?setup` in the URL previews the first-run setup (`?setup=2` opens a step).

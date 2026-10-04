@@ -49,11 +49,6 @@ Open it from the menu bar icon (**Open Murmur…**), or launch Murmur again from
 - **History** — search, copy or delete any dictation; clear all
 - **Settings** — everything below, saved automatically
 
-**Echo cancellation** (Settings → Microphone, on by default): with the System default microphone,
-Murmur records through Apple's voice processing (the echo cancellation FaceTime uses), so music or
-a video playing from the Mac's speakers is removed from what it hears. It opens the mic about a
-quarter of a second slower; turn it off if the start of your first word gets clipped.
-
 ## Settings
 Changes apply immediately (a hotkey change restarts Murmur; a model change downloads/loads it in
 the background). They are stored in `~/Library/Application Support/Murmur/config.json`.

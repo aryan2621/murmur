@@ -269,18 +269,29 @@ impl Core {
         }
     }
 
+    /// Opens the mic for this press. Returns at once (the hotkey's thread must stay free to see
+    /// the release when it happens); the rest runs once the mic is open.
     fn start_recording(self: &Arc<Self>) {
         self.set_phase(Phase::Recording);
         let app = self.app.clone();
         let on_level = Box::new(move |level: f32| {
             let _ = app.emit_to("widget", "level", level);
         });
-        if let Err(e) = {
-            let cfg = self.cfg();
-            self.recorder.start(cfg.input_device, cfg.echo_cancellation, on_level)
-        } {
-            self.set_phase(Phase::Idle);
-            self.fail(&format!("Mic error: {e}"));
+        let cfg = self.cfg();
+        let opened = self.recorder.start_async(cfg.input_device, on_level);
+        let core = self.clone();
+        std::thread::spawn(move || match opened.recv().unwrap_or_else(|e| Err(anyhow::anyhow!("{e}"))) {
+            Ok(()) => core.recording_started(),
+            Err(e) => {
+                core.set_phase(Phase::Idle);
+                core.fail(&format!("Mic error: {e}"));
+            }
+        });
+    }
+
+    fn recording_started(self: &Arc<Self>) {
+        if self.phase() != Phase::Recording {
+            // Released and handled while the mic was still opening.
             return;
         }
         self.emit("recording", None, None);
