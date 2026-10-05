@@ -28,6 +28,15 @@ impl Recording {
 enum Cmd {
     Start(Option<String>, LevelFn, mpsc::Sender<Result<()>>),
     Stop(mpsc::Sender<Result<Recording>>),
+    Peek(Duration, mpsc::Sender<Option<Tail>>),
+}
+
+/// The newest audio of a recording that is still running.
+pub struct Tail {
+    /// Mono, 16 kHz.
+    pub samples: Vec<f32>,
+    /// How much has been recorded so far, in 16 kHz samples; tells callers what is new.
+    pub total: usize,
 }
 
 struct Buffer {
@@ -69,6 +78,13 @@ impl Recorder {
         wait
     }
 
+    /// The last `span` of audio while recording (`None` when not recording).
+    pub fn peek(&self, span: Duration) -> Option<Tail> {
+        let (reply, wait) = mpsc::channel();
+        self.tx.send(Cmd::Peek(span, reply)).ok()?;
+        wait.recv().ok()?
+    }
+
     pub fn stop(&self) -> Result<Recording> {
         let (reply, wait) = mpsc::channel();
         self.tx.send(Cmd::Stop(reply))?;
@@ -98,6 +114,18 @@ fn audio_thread(rx: mpsc::Receiver<Cmd>) {
                     None => Err(anyhow!("not recording")),
                 };
                 let _ = reply.send(result);
+            }
+            Cmd::Peek(span, reply) => {
+                let tail = active.as_ref().map(|(_, buf, rate)| {
+                    // Copy and let go at once: the mic callback waits on this lock.
+                    let (raw, len) = {
+                        let b = buf.lock().unwrap();
+                        let want = (span.as_secs_f64() * *rate as f64) as usize;
+                        (b.samples[b.samples.len().saturating_sub(want)..].to_vec(), b.samples.len())
+                    };
+                    Tail { samples: resample(&raw, *rate, TARGET_RATE), total: (len as u64 * TARGET_RATE as u64 / *rate as u64) as usize }
+                });
+                let _ = reply.send(tail);
             }
         }
     }

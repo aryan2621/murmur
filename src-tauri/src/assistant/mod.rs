@@ -3,17 +3,21 @@
 
 pub mod actions;
 pub mod brain;
+mod duck;
 pub mod history;
 pub mod llm;
 pub mod speech;
+mod voice;
 
 use crate::hotkey::HotkeyEvent;
 use crate::{cleanup, config, gesture, key_label, model, play_sound, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
 use brain::Brain;
+use duck::Ducker;
 use config::Config;
 use llm::{Message, SentenceSplitter};
 use serde::Serialize;
 use speech::Speaker;
+use voice::VoiceDetector;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -77,6 +81,14 @@ struct Vad {
     blips: u32,
     /// A decision (send / give up) has been made for this recording.
     decided: bool,
+    /// The speech detector judges this recording; the level meter then only learns the room.
+    by_detector: bool,
+    /// Recorded audio (16 kHz samples) the speech detector has judged so far.
+    judged_until: Option<usize>,
+    /// Loud sound the speech detector found wasn't speech (typing, clicks), for the log.
+    ignored: Duration,
+    /// The mic has delivered audio for this recording.
+    got_audio: bool,
 }
 
 impl Vad {
@@ -84,11 +96,14 @@ impl Vad {
         Self::after(None)
     }
 
-    /// Starts listening again, remembering the room's background from last time, so speaking
-    /// the moment the mic opens isn't mistaken for the background.
+    /// Starts listening again, remembering the room's background from just before, so speaking
+    /// the moment the mic opens isn't mistaken for the background. Only a recent background
+    /// counts: one from minutes ago may predate a song that's playing now, and would make that
+    /// song pass for speech.
     fn after(previous: Option<&Vad>) -> Self {
         let now = Instant::now();
         let mut recent = std::collections::VecDeque::new();
+        let previous = previous.filter(|v| now - v.last_tick < RECENT_BACKGROUND);
         if let Some(floor) = previous.map(Vad::noise_floor).filter(|f| *f < 1.0) {
             recent.push_back((now, floor));
         }
@@ -107,6 +122,10 @@ impl Vad {
             threshold: 0.0,
             blips: 0,
             decided: false,
+            by_detector: false,
+            judged_until: None,
+            ignored: Duration::ZERO,
+            got_audio: false,
         }
     }
 
@@ -119,6 +138,7 @@ impl Vad {
     fn step(&mut self, now: Instant, level: f32, sensitivity: f32, pause: Duration, timeout: Duration) -> VadDecision {
         let dt = now - self.last_tick;
         self.last_tick = now;
+        self.got_audio = true;
         self.peak = self.peak.max(level);
         let threshold = if !self.heard_speech {
             // Before you speak: learn the room, and call it speech once it's clearly louder than
@@ -137,6 +157,9 @@ impl Vad {
             self.start_threshold.max(self.speech_level * VOICE_SHARE)
         };
         self.threshold = threshold;
+        if self.by_detector {
+            return VadDecision::Continue;
+        }
         if level > threshold {
             self.loud_run += dt;
         } else {
@@ -150,7 +173,15 @@ impl Vad {
             }
         }
         if self.loud_run >= SUSTAIN {
-            self.speech_level = if self.speech_level == 0.0 { level } else { self.speech_level * 0.9 + level * 0.1 };
+            // Only sound about as loud as your voice may update its level. Quieter sound still
+            // keeps listening open, but if it could pull the level down, the threshold would follow
+            // it, and background sound (a song, a video) would hold listening open until you
+            // out-shouted it.
+            if self.speech_level == 0.0 {
+                self.speech_level = level;
+            } else if !self.heard_speech || level >= self.speech_level * VOICE_LIKE {
+                self.speech_level = self.speech_level * 0.9 + level * 0.1;
+            }
             self.voice += dt;
             self.last_voice = now;
             if self.voice >= MIN_SPEECH && !self.heard_speech {
@@ -159,6 +190,39 @@ impl Vad {
                 self.first_voice = Some(now - self.voice);
             }
         }
+        self.decide(now, pause, timeout)
+    }
+
+    /// Takes the speech detector's verdict on the newest 32 ms windows (speech?, level), oldest
+    /// first, the last one ending `now`. Only speech that is also clearly louder than the room
+    /// counts as you talking, so a far-off voice doesn't either.
+    fn hear(&mut self, now: Instant, windows: &[(bool, f32)], pause: Duration, timeout: Duration) -> VadDecision {
+        let n = windows.len() as u32;
+        for (i, &(speech, level)) in windows.iter().enumerate() {
+            let at = now - voice::WINDOW_TIME * (n - 1 - i as u32);
+            let gate = if self.heard_speech { self.start_threshold } else { self.threshold };
+            if speech && level > gate {
+                self.speech_level = if self.speech_level == 0.0 { level } else { self.speech_level * 0.9 + level * 0.1 };
+                self.voice += voice::WINDOW_TIME;
+                self.last_voice = at;
+                if self.voice >= MIN_SPEECH && !self.heard_speech {
+                    self.heard_speech = true;
+                    self.start_threshold = gate;
+                    self.first_voice = Some(at - self.voice);
+                }
+            } else {
+                if level > gate {
+                    self.ignored += voice::WINDOW_TIME;
+                }
+                if !self.heard_speech {
+                    self.voice = self.voice.saturating_sub(voice::WINDOW_TIME / 2);
+                }
+            }
+        }
+        self.decide(now, pause, timeout)
+    }
+
+    fn decide(&self, now: Instant, pause: Duration, timeout: Duration) -> VadDecision {
         if self.heard_speech && (now - self.last_voice >= pause || now - self.started >= MAX_UTTERANCE) {
             VadDecision::Send
         } else if !self.heard_speech && now - self.started >= timeout {
@@ -166,6 +230,32 @@ impl Vad {
         } else {
             VadDecision::Continue
         }
+    }
+
+    /// Logs a send / give-up decision.
+    fn log_decision(&self, now: Instant, decision: &VadDecision) {
+        let since = |t: Instant| (t - self.started).as_secs_f32();
+        let ignored = if self.by_detector {
+            format!("{:.1}s of loud non-speech ignored (speech detector)", self.ignored.as_secs_f32())
+        } else {
+            format!("{} short sounds ignored (loudness only)", self.blips)
+        };
+        mlog!(
+            "vad: {} after {:.1}s (speech {:.1}s–{:.1}s, then {:.1}s quiet) — background {:.4}, threshold {:.4}, voice {:.4}, loudest {:.4}, {ignored}",
+            match decision {
+                VadDecision::Send if now - self.started >= MAX_UTTERANCE => "sent at the length limit",
+                VadDecision::Send => "pause detected",
+                _ => "no speech",
+            },
+            since(now),
+            self.first_voice.map(since).unwrap_or_default(),
+            since(self.last_voice),
+            (now - self.last_voice).as_secs_f32(),
+            self.noise_floor(),
+            self.threshold,
+            self.speech_level,
+            self.peak,
+        );
     }
 }
 
@@ -181,10 +271,14 @@ enum VadDecision {
 /// Once you're speaking, sound only counts as more speech if it reaches this share of your
 /// speaking level.
 const VOICE_SHARE: f32 = 0.35;
+/// Once you're speaking, only sound reaching this share of your speaking level updates that level.
+const VOICE_LIKE: f32 = 0.6;
+/// The background heard on the last listen is reused only if that ended this recently.
+const RECENT_BACKGROUND: Duration = Duration::from_secs(30);
 /// Loud time needed before a recording counts as speech (filters out clicks and coughs).
 const MIN_SPEECH: Duration = Duration::from_millis(250);
 /// Longest single utterance in conversation mode before it is sent anyway.
-const MAX_UTTERANCE: Duration = Duration::from_secs(45);
+const MAX_UTTERANCE: Duration = Duration::from_secs(30);
 /// How far back the background-noise estimate looks.
 const NOISE_WINDOW: Duration = Duration::from_secs(3);
 /// Speech must be this many times louder than the background (at "Normal" mic sensitivity).
@@ -198,6 +292,8 @@ const NORMAL_SENSITIVITY: f32 = 0.012;
 const SUSTAIN: Duration = Duration::from_millis(100);
 /// No audio from the mic for this long while listening: it has stopped, so stop waiting.
 const MIC_SILENT: Duration = Duration::from_secs(2);
+/// Same, before the mic has delivered anything at all: opening it can be slow.
+const MIC_START: Duration = Duration::from_secs(8);
 /// Pause after the assistant stops speaking before the mic reopens, so it doesn't hear its own echo.
 const ECHO_GUARD: Duration = Duration::from_millis(300);
 
@@ -213,6 +309,10 @@ pub struct Assistant {
     shared: Arc<Shared>,
     pub brain: Brain,
     pub speaker: Speaker,
+    /// Turns the Mac's sound down while the mic listens.
+    ducker: Ducker,
+    /// Tells your voice from typing, clicks and other sound in conversation mode.
+    voice: VoiceDetector,
     conversation: Mutex<Conversation>,
     phase: Mutex<Phase>,
     /// Bumped on every interruption; a response thread whose turn is stale goes quiet.
@@ -237,6 +337,8 @@ impl Assistant {
             app: shared.app.clone(),
             brain: Brain::new(&cfg),
             speaker: Speaker::new(&cfg.voice, cfg.speech_rate),
+            ducker: Ducker::new(),
+            voice: VoiceDetector::new(),
             shared,
             conversation: Mutex::new(Conversation::default()),
             phase: Mutex::new(Phase::Idle),
@@ -360,12 +462,23 @@ impl Assistant {
             HotkeyEvent::Pressed => {
                 let phase = self.phase();
                 if self.conversing() {
-                    // Tap while it talks: stop it and listen. Tap while it listens: end.
+                    // Tap while it talks: stop it and listen. Tap after you've spoken: send it now
+                    // (when people nearby talk as loud as you, no pause ever comes). Tap while it
+                    // waits for you to speak: end.
                     self.gesture.lock().unwrap().ignore_release = true;
+                    let send_now = phase == Phase::Recording && {
+                        let mut v = self.vad.lock().unwrap();
+                        let send = v.heard_speech && !v.decided;
+                        v.decided |= send;
+                        send
+                    };
                     if phase == Phase::Responding {
                         mlog!("interrupted (conversation continues)");
                         self.interrupt();
                         self.listen(true);
+                    } else if send_now {
+                        mlog!("sent with the hotkey");
+                        self.finish_recording();
                     } else {
                         self.end_conversation("ended with the hotkey");
                     }
@@ -472,12 +585,14 @@ impl Assistant {
         });
         let cfg = self.cfg();
         self.shared.preload_transcriber();
+        self.ducker.duck();
         self.shared.recorder.start_async(cfg.input_device, on_level)
     }
 
     /// The mic has opened, or couldn't. True when recording.
     fn mic_opened(self: &Arc<Self>, result: anyhow::Result<()>) -> bool {
         if let Err(e) = result {
+            self.ducker.restore();
             self.set_phase(Phase::Idle);
             self.in_conversation.store(false, Ordering::SeqCst);
             self.fail(&format!("Mic error: {e}"));
@@ -506,7 +621,8 @@ impl Assistant {
     /// The tap's recording keeps running; from now on a pause sends it.
     fn start_conversation(self: &Arc<Self>) {
         self.in_conversation.store(true, Ordering::SeqCst);
-        // Count from now: the tap itself isn't speech.
+        self.ducker.duck_now();
+        // Count from now: the tap itself (and any sound before it was turned down) isn't speech.
         {
             let mut vad = self.vad.lock().unwrap();
             *vad = Vad::after(Some(&vad));
@@ -515,22 +631,28 @@ impl Assistant {
         self.show_widget();
         self.play("Tink");
         self.watch_mic();
-        self.set_status(&format!("In conversation — tap {} to end", key_label(&self.cfg().assistant_hotkey)));
+        self.set_status(&format!("In conversation — tap {} to send now, Esc to end", key_label(&self.cfg().assistant_hotkey)));
     }
 
-    /// Conversation mode: if the mic stops delivering audio, nothing would ever decide the
-    /// utterance is over and it would sit on "Listening". Notice that and move on.
+    /// Conversation mode: runs the speech detector on the new audio a few times a second and
+    /// decides when you've finished. Also, if the mic stops delivering audio, nothing would ever
+    /// decide the utterance is over and it would sit on "Listening": notice that and move on.
     fn watch_mic(self: &Arc<Self>) {
         let core = self.clone();
         let turn = self.turn.load(Ordering::SeqCst);
         std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(voice::WINDOW_TIME * 8);
             if !core.conversing() || !core.current(turn) || core.phase() != Phase::Recording {
+                return;
+            }
+            if core.detect_voice() {
                 return;
             }
             let (decided, silent, heard) = {
                 let v = core.vad.lock().unwrap();
-                (v.decided, v.last_tick.elapsed() >= MIC_SILENT, v.heard_speech)
+                // The first open after launch can take a few seconds to deliver audio.
+                let limit = if v.got_audio { MIC_SILENT } else { MIC_START };
+                (v.decided, v.last_tick.elapsed() >= limit, v.heard_speech)
             };
             if decided {
                 return;
@@ -548,6 +670,58 @@ impl Assistant {
         });
     }
 
+    /// Judges the audio recorded since the last look. True once a decision has been made.
+    fn detect_voice(self: &Arc<Self>) -> bool {
+        let Some(tail) = self.shared.recorder.peek(voice::CONTEXT) else { return false };
+        let judged = {
+            let mut v = self.vad.lock().unwrap();
+            if v.decided {
+                return true;
+            }
+            // First look at this recording: judge everything since listening (re)started.
+            let since_start = (v.started.elapsed().as_secs_f64() * crate::audio::TARGET_RATE as f64) as usize;
+            *v.judged_until.get_or_insert(tail.total.saturating_sub(since_start))
+        };
+        let new = (tail.total.saturating_sub(judged) / voice::WINDOW).min(tail.samples.len() / voice::WINDOW);
+        if new == 0 {
+            return false;
+        }
+        // Whole windows, lined up so the last one ends with the newest audio.
+        let samples = &tail.samples[tail.samples.len() % voice::WINDOW..];
+        let Some(windows) = self.voice.windows(samples) else { return false };
+        let now = Instant::now();
+        let decision = {
+            let cfg = self.shared.cfg.read().unwrap();
+            let mut v = self.vad.lock().unwrap();
+            if v.decided || v.judged_until.is_none() {
+                return v.decided;
+            }
+            if !v.by_detector {
+                // Take over from the level meter, from a clean slate.
+                v.by_detector = true;
+                v.heard_speech = false;
+                v.voice = Duration::ZERO;
+                v.first_voice = None;
+                v.last_voice = v.started;
+            }
+            v.judged_until = Some(judged + new * voice::WINDOW);
+            let pause = Duration::from_secs_f32(cfg.pause_seconds.max(0.4));
+            let timeout = Duration::from_secs(cfg.conversation_timeout_seconds.max(3) as u64);
+            let decision = v.hear(now, &windows[windows.len() - new..], pause, timeout);
+            if !matches!(decision, VadDecision::Continue) {
+                v.decided = true;
+                v.log_decision(now, &decision);
+            }
+            decision
+        };
+        match decision {
+            VadDecision::Send => self.finish_recording(),
+            VadDecision::GiveUp => self.end_conversation("timed out"),
+            VadDecision::Continue => return false,
+        }
+        true
+    }
+
     /// Conversation mode: open the mic for the next thing the user says.
     fn listen(self: &Arc<Self>, immediately: bool) {
         if !immediately {
@@ -556,6 +730,7 @@ impl Assistant {
         if !self.conversing() || !matches!(self.phase(), Phase::Idle | Phase::Responding) {
             return;
         }
+        self.ducker.duck_now();
         if self.start_recording() {
             self.emit("listening", None, None);
             self.show_widget();
@@ -570,7 +745,7 @@ impl Assistant {
         mlog!("conversation {why}");
         self.interrupt();
         if self.phase() == Phase::Recording {
-            let _ = self.shared.recorder.stop();
+            let _ = self.stop_mic();
             self.set_phase(Phase::Idle);
         }
         self.play("Bottle");
@@ -592,24 +767,7 @@ impl Assistant {
             let decision = v.step(now, level, cfg.speech_threshold, pause, timeout);
             if !matches!(decision, VadDecision::Continue) {
                 v.decided = true;
-                let since = |t: Instant| (t - v.started).as_secs_f32();
-                mlog!(
-                    "vad: {} after {:.1}s (speech {:.1}s–{:.1}s, then {:.1}s quiet) — background {:.4}, threshold {:.4}, voice {:.4}, loudest {:.4}, {} short sounds ignored",
-                    match decision {
-                        VadDecision::Send if now - v.started >= MAX_UTTERANCE => "sent at the length limit",
-                        VadDecision::Send => "pause detected",
-                        _ => "no speech",
-                    },
-                    since(now),
-                    v.first_voice.map(since).unwrap_or_default(),
-                    since(v.last_voice),
-                    (now - v.last_voice).as_secs_f32(),
-                    v.noise_floor(),
-                    v.threshold,
-                    v.speech_level,
-                    v.peak,
-                    v.blips
-                );
+                v.log_decision(now, &decision);
             }
             decision
         };
@@ -626,11 +784,23 @@ impl Assistant {
         }
     }
 
+    /// Stops the mic and turns the sound back up.
+    fn stop_mic(&self) -> anyhow::Result<crate::audio::Recording> {
+        let rec = self.shared.recorder.stop();
+        self.ducker.restore();
+        rec
+    }
+
+    /// Puts the sound back if it was turned down (Murmur is quitting).
+    pub fn restore_sound(&self) {
+        self.ducker.restore();
+    }
+
     fn cancel_recording(self: &Arc<Self>) {
         if self.phase() != Phase::Recording {
             return;
         }
-        let _ = self.shared.recorder.stop();
+        let _ = self.stop_mic();
         self.set_phase(Phase::Idle);
         self.hide_widget();
     }
@@ -663,7 +833,7 @@ impl Assistant {
     /// Recording → question → streamed answer, spoken sentence by sentence.
     /// Returns how long to keep the answer on screen afterwards.
     fn respond(&self, turn: u64) -> anyhow::Result<Duration> {
-        let rec = self.shared.recorder.stop()?;
+        let rec = self.stop_mic()?;
         if rec.seconds() < MIN_SECONDS || rec.peak_rms < SILENCE_RMS {
             mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
             return Ok(Duration::ZERO);
@@ -1014,18 +1184,22 @@ impl Assistant {
                 let _ = tx.send(heard);
             }
         });
+        self.ducker.duck_now();
         let listening = self.shared.recorder.start(cfg.input_device.clone(), on_level).is_ok();
+        if !listening {
+            self.ducker.restore();
+        }
         let started = Instant::now();
         let heard = loop {
             if let Ok(yes) = buttons.try_recv() {
                 if listening {
-                    let _ = self.shared.recorder.stop();
+                    let _ = self.stop_mic();
                 }
                 return yes;
             }
             if !self.current(turn) || started.elapsed() > Duration::from_secs(15) {
                 if listening {
-                    let _ = self.shared.recorder.stop();
+                    let _ = self.stop_mic();
                 }
                 return false;
             }
@@ -1037,7 +1211,7 @@ impl Assistant {
         if !listening {
             return false;
         }
-        let Ok(rec) = self.shared.recorder.stop() else { return false };
+        let Ok(rec) = self.stop_mic() else { return false };
         if !heard {
             return false;
         }

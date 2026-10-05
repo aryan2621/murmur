@@ -922,6 +922,7 @@ pub fn run() {
         RunEvent::Exit => {
             if let Some(a) = app.try_state::<Arc<Assistant>>() {
                 a.brain.local.stop();
+                a.restore_sound();
             }
         }
         _ => {}

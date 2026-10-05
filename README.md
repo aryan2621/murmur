@@ -60,7 +60,11 @@ Without it, Murmur falls back to listening only (needs **Input Monitoring**); in
 **Conversation:** tap **Right Option** once. Talk; when you pause (~1.2 s) it answers, then
 listens again by itself for your follow-up.
 - **Tap** while it's talking → it stops and listens to you.
-- **Tap** while it's listening → the conversation ends. So does **Esc**, or ~20 s of silence.
+- **Tap** after you've spoken → it sends your question at once, without waiting for a pause
+  (handy when people nearby are talking).
+- **Tap** before you've said anything → the conversation ends. So does **Esc**, or ~20 s of silence.
+- While it listens, the Mac's sound is turned down so a song or video playing doesn't sound
+  like you still talking.
 - The mic is off while it speaks, so it never hears (and answers) its own voice.
 
 Anywhere: **Esc** stops an answer. The last few exchanges are remembered for 5 minutes, so
