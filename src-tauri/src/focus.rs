@@ -387,38 +387,64 @@ fn front_window<'a>(mine: &[&'a OnScreen]) -> Option<&'a OnScreen> {
         .find(|w| !mine.iter().any(|o| area(&o.frame) > area(&w.frame) && overlap(&o.frame, &w.frame) >= 0.9 * area(&w.frame)))
 }
 
-/// The window the user is working in, on screen now (the part of it on its display); None when
-/// it can't be told (the caller then uses the screen under the mouse).
+/// System agents that take keyboard focus for a moment (a menu bar item, a notification,
+/// Spotlight) without being where the user works.
 #[cfg(target_os = "macos")]
-pub fn active_window_frame() -> Option<Frame> {
+const SYSTEM_UI: [&str; 5] = [
+    "com.apple.controlcenter",
+    "com.apple.notificationcenterui",
+    "com.apple.UserNotificationCenter",
+    "com.apple.Spotlight",
+    "com.apple.systemuiserver",
+];
+
+/// The window the user is working in, on screen now (the part of it on its display); None when
+/// it can't be told (the caller then uses the screen under the mouse). `log` writes how it was
+/// chosen (off for the repeated checks while the widget follows the active window).
+#[cfg(target_os = "macos")]
+pub fn active_window_frame(log: bool) -> Option<Frame> {
     let displays = display_frames();
     let windows = onscreen_windows(&displays);
     let focused = ax::focused_pid().filter(|&pid| pid != std::process::id() as i32);
     // The focused app, else (no Accessibility answer) the owner of the topmost window.
-    let pid = focused.or_else(|| windows.first().map(|w| w.pid))?;
+    let mut pid = focused.or_else(|| windows.first().map(|w| w.pid))?;
+    if SYSTEM_UI.contains(&bundle_of(pid).as_str()) {
+        if let Some(top) = windows.first() {
+            if log {
+                mlog!("widget: {} has focus for a moment; using the window in front, {}'s", bundle_of(pid), top.owner);
+            }
+            pid = top.pid;
+        }
+    }
     let mine: Vec<&OnScreen> = windows.iter().filter(|w| w.pid == pid).collect();
     let Some(front) = front_window(&mine) else {
         // The focused app has nothing on screen here (e.g. Finder with only the desktop, or a
         // Space still sliding in).
-        mlog!("widget: the app in front (pid {pid}) has no window on screen; using the screen under the mouse");
+        if log {
+            mlog!("widget: the app in front (pid {pid}) has no window on screen; using the screen under the mouse");
+        }
         return None;
     };
     // Its focused window, when that is on this Space: mostly covered by its windows here.
     if let Some(f) = ax::focused_window(pid) {
         let covered: f64 = mine.iter().map(|w| overlap(&w.frame, &f)).sum();
         if covered >= 0.5 * area(&f) {
-            mlog!("widget: on {}'s focused window {f:?}", front.owner);
+            if log {
+                mlog!("widget: on {}'s focused window {f:?}", front.owner);
+            }
             return Some(visible_part(f, &displays));
         }
-        mlog!("widget: {}'s focused window {f:?} is elsewhere; using its front window {:?}", front.owner, front.frame);
-    } else {
+        if log {
+            mlog!("widget: {}'s focused window {f:?} is elsewhere; using its front window {:?}", front.owner, front.frame);
+        }
+    } else if log {
         mlog!("widget: on {}'s front window {:?}", front.owner, front.frame);
     }
     Some(visible_part(front.frame, &displays))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn active_window_frame() -> Option<(f64, f64, f64, f64)> {
+pub fn active_window_frame(_log: bool) -> Option<(f64, f64, f64, f64)> {
     None
 }
 

@@ -176,19 +176,19 @@ impl Shared {
             place_widget(&self.app, &w, mode);
         }
         show_without_focus(&w);
-        // Right after a switch (a Space still sliding in, an app still activating) the window in
-        // front isn't settled yet; look again once it is, unless the widget was shown since.
+        // Follow the active window while the widget is up: right after a switch the window in
+        // front isn't settled yet (a Space still sliding in, an app still activating), and the
+        // user may switch apps, swipe to another Space or move to another display mid-dictation.
+        // Stops when the widget hides or is shown again (that showing starts its own follower).
         let app = self.app.clone();
-        std::thread::spawn(move || {
-            for ms in [300, 700] {
-                std::thread::sleep(Duration::from_millis(ms));
-                let Some(shared) = app.try_state::<Arc<Shared>>() else { return };
-                if shared.widget_shown() != shown || !w.is_visible().unwrap_or(false) {
-                    return;
-                }
-                if !widget_drag::dragging(&app) {
-                    place_widget(&app, &w, mode);
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(WIDGET_FOLLOW_MS));
+            let Some(shared) = app.try_state::<Arc<Shared>>() else { return };
+            if shared.widget_shown() != shown || !w.is_visible().unwrap_or(false) {
+                return;
+            }
+            if !widget_drag::dragging(&app) {
+                place_widget_quietly(&app, &w, mode);
             }
         });
     }
@@ -420,13 +420,28 @@ fn key_label(key: &str) -> &str {
 /// that window can't be told reliably while Spaces slide or apps activate, so it landed on the
 /// wrong window. The window in front only picks the screen; else the screen under the mouse.
 /// A spot the user dragged it to wins.
+/// How often the shown widget checks it's still on the active window's display.
+const WIDGET_FOLLOW_MS: u64 = 400;
+
+/// Places the widget for a new showing, logging how the display was chosen.
 fn place_widget(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
+    place_widget_logged(app, win, mode, true);
+}
+
+/// Re-checks the placement while the widget is up; logs only when it has to move.
+fn place_widget_quietly(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
+    place_widget_logged(app, win, mode, false);
+}
+
+fn place_widget_logged(app: &AppHandle, win: &WebviewWindow, mode: Mode, log: bool) {
     if let Some(p) = widget_drag::pinned(app) {
-        let _ = win.set_position(p);
+        if win.outer_position().ok() != Some(p) {
+            let _ = win.set_position(p);
+        }
         return;
     }
     let Ok(size) = win.outer_size() else { return };
-    let frame = own_focused_window(app).or_else(focus::active_window_frame);
+    let frame = own_focused_window(app, log).or_else(|| focus::active_window_frame(log));
     let monitor = frame
         .and_then(|(x, y, w, h)| monitor_at_point(app, x + w / 2.0, y + h / 2.0))
         .or_else(|| {
@@ -443,18 +458,29 @@ fn place_widget(app: &AppHandle, win: &WebviewWindow, mode: Mode) {
     let margin = ((if mode == Mode::Dictation { 28.0 } else { 20.0 }) * m.scale_factor()) as i32;
     let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
     let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
-    let _ = win.set_position(PhysicalPosition::new(x, y));
+    let target = PhysicalPosition::new(x, y);
+    let moved = win.outer_position().ok() != Some(target);
+    if log || moved {
+        let display = m.name().cloned().unwrap_or_else(|| "a display".into());
+        let why = if log { "placed" } else { "moved to follow the active window" };
+        mlog!("widget: {why} on {display} at ({x}, {y}), window {frame:?}");
+    }
+    if moved {
+        let _ = win.set_position(target);
+    }
 }
 
 /// Murmur's app window when it's the one in front (the window lookup leaves out our own).
-fn own_focused_window(app: &AppHandle) -> Option<focus::Frame> {
+fn own_focused_window(app: &AppHandle, log: bool) -> Option<focus::Frame> {
     let main = app.get_webview_window("main")?;
     if !main.is_visible().unwrap_or(false) || !main.is_focused().unwrap_or(false) || main.is_minimized().unwrap_or(false) {
         return None;
     }
     let (p, size, s) = (main.outer_position().ok()?, main.outer_size().ok()?, main.scale_factor().ok()?);
     let f = (p.x as f64 / s, p.y as f64 / s, size.width as f64 / s, size.height as f64 / s);
-    mlog!("widget: on Murmur's window {f:?}");
+    if log {
+        mlog!("widget: on Murmur's window {f:?}");
+    }
     Some(f)
 }
 
@@ -485,19 +511,22 @@ mod panel {
 
     const STATUS_WINDOW_LEVEL: i64 = 25;
 
+    /// On every Space, including other apps' full-screen ones, and left out of ⌘` and Exposé.
+    fn behavior() -> objc2_app_kit::NSWindowCollectionBehavior {
+        CollectionBehavior::new()
+            .can_join_all_spaces()
+            .full_screen_auxiliary()
+            .stationary()
+            .ignores_cycle()
+            .into()
+    }
+
     /// Turns the widget window into a non-activating NSPanel: the only window type that can
     /// float over full-screen apps on every Space without stealing focus.
     pub fn convert(win: &WebviewWindow) -> tauri::Result<()> {
         let panel = win.to_panel::<WidgetPanel>()?;
         panel.set_level(STATUS_WINDOW_LEVEL);
-        panel.set_collection_behavior(
-            CollectionBehavior::new()
-                .can_join_all_spaces()
-                .full_screen_auxiliary()
-                .stationary()
-                .ignores_cycle()
-                .into(),
-        );
+        panel.set_collection_behavior(behavior());
         if let Err(e) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
             mlog!("widget: could not make panel non-activating: {e}");
         }
@@ -522,7 +551,23 @@ mod panel {
         let label = win.label().to_string();
         let _ = win.run_on_main_thread(move || {
             if let Ok(panel) = app.get_webview_panel(&label) {
-                if visible { panel.show() } else { panel.hide() }
+                if !visible {
+                    panel.hide();
+                    return;
+                }
+                // Set again before each showing: if anything reset them, the widget would open on
+                // the desktop's Space instead of over the full-screen app being dictated into.
+                let ns = panel.as_panel();
+                let before = ns.collectionBehavior();
+                if before != behavior() {
+                    mlog!("widget: Spaces behavior was {:#x}, setting it again", before.0);
+                }
+                ns.setCollectionBehavior(behavior());
+                ns.setLevel(STATUS_WINDOW_LEVEL as isize);
+                panel.show();
+                if !ns.isOnActiveSpace() {
+                    mlog!("widget: shown, but not on the Space in front (behavior {:#x})", ns.collectionBehavior().0);
+                }
             }
         });
         true
