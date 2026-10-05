@@ -1,7 +1,10 @@
-//! Text to speech with the built-in macOS voices (`say`), so it works offline with no download.
-//! Sentences are queued and spoken in order on one thread; `stop()` cuts off the current one
-//! and drops the rest, which is what makes interrupting feel instant.
+//! Text to speech: the built-in macOS voices (`say`, works offline with no download) or the natural
+//! voice (`kokoro`, downloaded once). Sentences are queued and spoken in order on one thread; `stop()`
+//! cuts off the current one and drops the rest, which is what makes interrupting feel instant.
 
+use crate::assistant::kokoro::Kokoro;
+use crate::assistant::player::Player;
+use crate::config::Config;
 use serde::Serialize;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -9,66 +12,149 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Settings' "Voice type".
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Engine {
+    /// The macOS voices.
+    System,
+    /// Kokoro: a natural AI voice.
+    Natural,
+}
+
+impl Engine {
+    pub fn from(name: &str) -> Self {
+        match name {
+            "natural" => Engine::Natural,
+            _ => Engine::System,
+        }
+    }
+}
+
+/// The normal speaking rate (Settings' "Normal"), which the natural voice speaks at speed 1.
+const NORMAL_RATE: f32 = 195.0;
+
+/// Which voice says something.
+#[derive(Clone)]
+struct VoiceChoice {
+    engine: Engine,
+    /// Full `say` voice name; `None` = system voice. Also the fallback for the natural voice.
+    voice: Option<String>,
+    rate: u32,
+    /// The natural voice's speaker (a Kokoro voice id).
+    speaker: String,
+}
+
+impl VoiceChoice {
+    fn from(cfg: &Config) -> Self {
+        Self { engine: Engine::from(&cfg.voice_engine), voice: resolve(&cfg.voice), rate: cfg.speech_rate, speaker: cfg.natural_voice.clone() }
+    }
+}
+
 struct Utterance {
     epoch: u64,
     text: String,
-    /// Full `say` voice name; `None` = system voice.
-    voice: Option<String>,
-    rate: u32,
+    voice: VoiceChoice,
 }
 
 pub struct Speaker {
     tx: mpsc::Sender<Utterance>,
     /// Bumped by `stop()`; queued sentences from an older epoch are skipped.
     epoch: Arc<AtomicU64>,
-    /// Sentences queued or being spoken.
+    /// Sentences queued or being made / spoken. The natural voice may still be playing a sentence
+    /// after it's done with it, see `is_speaking`.
     pending: Arc<AtomicUsize>,
-    voice: Mutex<(Option<String>, u32)>,
+    voice: Mutex<VoiceChoice>,
+    player: Arc<Player>,
+    pub kokoro: Arc<Kokoro>,
 }
 
 impl Speaker {
-    pub fn new(voice: &str, rate: u32) -> Self {
+    pub fn new(cfg: &Config) -> Self {
         let (tx, rx) = mpsc::channel::<Utterance>();
         let epoch = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(AtomicUsize::new(0));
-        let (e, p) = (epoch.clone(), pending.clone());
+        let player = Arc::new(Player::new());
+        let kokoro = Arc::new(Kokoro::new(player.clone()));
+        let (e, p, k) = (epoch.clone(), pending.clone(), kokoro.clone());
         std::thread::Builder::new()
             .name("murmur-speech".into())
             .spawn(move || {
                 for u in rx {
                     if u.epoch == e.load(Ordering::SeqCst) {
-                        speak_one(&u, &e);
+                        speak(&u, &e, &k);
                     }
                     p.fetch_sub(1, Ordering::SeqCst);
                 }
             })
             .expect("spawn speech thread");
-        Self { tx, epoch, pending, voice: Mutex::new((resolve(voice), rate)) }
+        Self { tx, epoch, pending, voice: Mutex::new(VoiceChoice::from(cfg)), player, kokoro }
     }
 
-    /// Switches voice / speed for everything said from now on.
-    pub fn configure(&self, voice: &str, rate: u32) {
-        *self.voice.lock().unwrap() = (resolve(voice), rate);
+    /// Switches voice / speed for everything said from now on, and frees the natural voice's
+    /// memory when it's no longer used.
+    pub fn configure(&self, cfg: &Config) {
+        let choice = VoiceChoice::from(cfg);
+        let was = std::mem::replace(&mut *self.voice.lock().unwrap(), choice.clone()).engine;
+        if was == Engine::Natural && choice.engine != Engine::Natural {
+            self.kokoro.unload();
+        }
+    }
+
+    /// The voice type chosen in Settings.
+    pub fn engine(&self) -> Engine {
+        self.voice.lock().unwrap().engine
+    }
+
+    /// Loads the natural voice ahead of the first sentence, if it's the one chosen.
+    pub fn warm_up(&self) -> anyhow::Result<()> {
+        match self.engine() {
+            Engine::Natural if Kokoro::ready() => self.kokoro.warm_up(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Frees the natural voice's memory after `minutes` without speaking (0 = never).
+    pub fn unload_if_idle(&self, minutes: u64) {
+        self.kokoro.unload_if_idle(minutes);
+    }
+
+    /// Frees the natural voice's memory.
+    pub fn unload(&self) {
+        self.kokoro.unload();
     }
 
     pub fn say(&self, text: &str) {
-        let (voice, rate) = self.voice.lock().unwrap().clone();
-        self.enqueue(text, voice, rate);
+        let voice = self.voice.lock().unwrap().clone();
+        self.enqueue(text, voice);
     }
 
     /// Stops whatever is playing and says `text` in the given voice (Settings' ▶ button).
-    pub fn preview(&self, voice: &str, rate: u32, text: &str) {
+    /// `engine` is "system" (`voice` is a macOS voice) or "natural" (`voice` is one of its
+    /// speakers). Returns once it can be heard (the natural voice takes a moment to load), so the
+    /// button can show it's busy until then.
+    pub fn preview(&self, engine: &str, voice: &str, rate: u32, text: &str) {
         self.stop();
-        self.enqueue(text, resolve(voice), rate);
+        let engine = Engine::from(engine);
+        let choice = if engine == Engine::System {
+            VoiceChoice { engine, voice: resolve(voice), rate, speaker: String::new() }
+        } else {
+            let fallback = self.voice.lock().unwrap().voice.clone();
+            VoiceChoice { engine, voice: fallback, rate, speaker: voice.to_string() }
+        };
+        self.enqueue(text, choice);
+        let started = Instant::now();
+        while engine != Engine::System && !self.player.audible() && self.is_speaking() && started.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
-    fn enqueue(&self, text: &str, voice: Option<String>, rate: u32) {
+    fn enqueue(&self, text: &str, voice: VoiceChoice) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let u = Utterance { epoch: self.epoch.load(Ordering::SeqCst), text: text.to_string(), voice, rate };
+        let u = Utterance { epoch: self.epoch.load(Ordering::SeqCst), text: text.to_string(), voice };
         if self.tx.send(u).is_err() {
             self.pending.fetch_sub(1, Ordering::SeqCst);
         }
@@ -77,10 +163,11 @@ impl Speaker {
     /// Stops speaking now and forgets anything queued.
     pub fn stop(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.player.clear();
     }
 
     pub fn is_speaking(&self) -> bool {
-        self.pending.load(Ordering::SeqCst) > 0
+        self.pending.load(Ordering::SeqCst) > 0 || self.player.busy()
     }
 
     /// Blocks until everything queued has been spoken, `keep_waiting` returns false, or a
@@ -93,13 +180,27 @@ impl Speaker {
     }
 }
 
-fn speak_one(u: &Utterance, epoch: &AtomicU64) {
+/// Says one sentence in the natural voice if it's chosen, falling back to the macOS voice if it
+/// can't (not downloaded, or its model failed to load).
+fn speak(u: &Utterance, epoch: &AtomicU64, kokoro: &Kokoro) {
+    if u.voice.engine == Engine::Natural {
+        let speed = (u.voice.rate as f32 / NORMAL_RATE).clamp(0.7, 1.5);
+        match kokoro.speak(&u.text, &u.voice.speaker, speed, || epoch.load(Ordering::SeqCst) != u.epoch) {
+            Ok(()) => return,
+            Err(e) => mlog!("natural voice failed ({e}); using the macOS voice"),
+        }
+    }
+    say_one(u, epoch);
+}
+
+fn say_one(u: &Utterance, epoch: &AtomicU64) {
+    let text = &u.text;
     let mut cmd = Command::new("say");
-    if let Some(v) = &u.voice {
+    if let Some(v) = &u.voice.voice {
         cmd.args(["-v", v]);
     }
     // Text goes in on stdin so a sentence starting with "-" isn't read as a flag.
-    cmd.args(["-r", &u.rate.to_string()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.args(["-r", &u.voice.rate.to_string()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -108,7 +209,7 @@ fn speak_one(u: &Utterance, epoch: &AtomicU64) {
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(u.text.as_bytes());
+        let _ = stdin.write_all(text.as_bytes());
     }
     loop {
         match child.try_wait() {
@@ -138,8 +239,23 @@ const NOVELTY: &[&str] = &[
     "Kathy", "Organ", "Ralph", "Superstar", "Trinoids", "Whisper", "Wobble", "Zarvox",
 ];
 
-/// Installed voices as (full `say` name, short name, locale).
+/// Installed voices as (full `say` name, short name, locale). Listing them takes `say` most of a
+/// second, so the list is kept for a minute (long enough for a Settings visit, short enough to
+/// pick up a voice downloaded meanwhile).
 fn installed() -> Vec<(String, String, String)> {
+    static CACHE: Mutex<Option<(Instant, Vec<(String, String, String)>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return list.clone();
+        }
+    }
+    let list = list_installed();
+    *cache = Some((Instant::now(), list.clone()));
+    list
+}
+
+fn list_installed() -> Vec<(String, String, String)> {
     let Ok(out) = Command::new("say").args(["-v", "?"]).output() else { return vec![] };
     // Lines look like "Daniel              en_GB    # Hello! My name is Daniel." or
     // "Tara (English (India)) en_IN    # ...": the name is everything before the locale column.

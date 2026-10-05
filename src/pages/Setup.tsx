@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Kbd, Panel } from "@/components/bits";
 import { api, events, keyLabel, type Reply, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
+import { useBusy } from "@/hooks/use-busy";
 import { cn } from "@/lib/utils";
 
 const DICTATION_STEPS = ["Welcome", "Permissions", "Speech", "Try it"] as const;
@@ -44,6 +45,7 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
   const { state, refresh } = app;
   // Steps are numbered over all of them, so a saved step means the same thing on every Mac.
   const [step, setStep] = useState(savedStep);
+  const { busy: finishing, run } = useBusy();
   const go = (n: number) => {
     setStep(n);
     saveStep(n);
@@ -75,8 +77,8 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <div data-tauri-drag-region className="flex h-12 shrink-0 items-center justify-end px-4">
         {step < done && (
-          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={finish}>
-            Skip setup
+          <Button variant="ghost" size="sm" className="text-muted-foreground" disabled={finishing !== null} onClick={() => run("finish", finish)}>
+            {finishing && <Loader2 className="animate-spin" />} Skip setup
           </Button>
         )}
       </div>
@@ -90,7 +92,7 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
               </li>
             ))}
           </ol>
-          <div key={step} className="animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+          <div key={step} aria-busy={finishing !== null} className={cn("animate-in fade-in-0 slide-in-from-bottom-1 duration-300", finishing && "pointer-events-none")}>
             {step === 0 && <Welcome onNext={() => go(1)} />}
             {step === 1 && <Permissions app={app} onBack={() => go(0)} onNext={() => go(2)} />}
             {step === 2 && <Model app={app} onBack={() => go(1)} onNext={() => go(3)} />}
@@ -98,7 +100,7 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
             {step === 4 && <BrainStep app={app} name={name} onBack={() => go(3)} onNext={() => go(5)} onSkip={() => go(done)} />}
             {step === 5 && <VoiceStep app={app} onBack={() => go(4)} onNext={() => go(6)} />}
             {step === 6 && <AskIt app={app} keyLabel={askKey} name={name} onBack={() => go(5)} onNext={() => go(done)} />}
-            {step === done && <Done keyLabel={key} askKey={state.assistant?.unavailable ? null : askKey} name={name} onFinish={finish} />}
+            {step === done && <Done keyLabel={key} askKey={state.assistant?.unavailable ? null : askKey} name={name} finishing={finishing !== null} onFinish={() => run("finish", finish)} />}
           </div>
         </div>
       </main>
@@ -115,17 +117,20 @@ function StepHeader({ title, children }: { title: ReactNode; children: ReactNode
   );
 }
 
-function Nav({ onBack, onNext, nextLabel = "Continue", nextDisabled, hint, quiet }: { onBack?: () => void; onNext: () => void; nextLabel?: string; nextDisabled?: boolean; hint?: ReactNode; quiet?: boolean }) {
+/** Back / Continue. `busy`: the step is still doing something, so neither can be clicked yet. */
+function Nav({ onBack, onNext, nextLabel = "Continue", nextDisabled, hint, quiet, busy }: { onBack?: () => void; onNext: () => unknown; nextLabel?: string; nextDisabled?: boolean; hint?: ReactNode; quiet?: boolean; busy?: boolean }) {
+  const { busy: going, run } = useBusy();
+  const blocked = busy || going !== null;
   return (
     <div className="mt-6 flex items-center gap-3">
       {onBack && (
-        <Button variant="ghost" onClick={onBack}>
+        <Button variant="ghost" onClick={onBack} disabled={blocked}>
           <ArrowLeft /> Back
         </Button>
       )}
       <span className="flex-1 text-right text-xs text-muted-foreground">{hint}</span>
-      <Button variant={quiet ? "outline" : "default"} onClick={onNext} disabled={nextDisabled}>
-        {nextLabel} <ArrowRight />
+      <Button variant={quiet ? "outline" : "default"} onClick={() => run("next", onNext)} disabled={nextDisabled || blocked}>
+        {nextLabel} {blocked ? <Loader2 className="animate-spin" /> : <ArrowRight />}
       </Button>
     </div>
   );
@@ -175,6 +180,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
 
 function Permissions({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; onBack: () => void; onNext: () => void }) {
   const { state, refresh } = app;
+  const { busy, run } = useBusy();
   // Permissions change in System Settings, outside the app: check again every second or so.
   useEffect(() => {
     const id = window.setInterval(refresh, 1500);
@@ -194,8 +200,8 @@ function Permissions({ app, onBack, onNext }: { app: ReturnType<typeof useAppSta
           description={<>To notice the dictation key in any app and type the text for you. Murmur restarts by itself once you turn it on, then setup carries on here.</>}
           done={accessibility}
           action={
-            <Button size="sm" onClick={() => api.openPrivacy("accessibility")}>
-              Allow
+            <Button size="sm" disabled={busy !== null} onClick={() => run("accessibility", () => api.openPrivacy("accessibility"))}>
+              {busy === "accessibility" && <Loader2 className="animate-spin" />} Allow
             </Button>
           }
         />
@@ -206,18 +212,29 @@ function Permissions({ app, onBack, onNext }: { app: ReturnType<typeof useAppSta
           done={micDone}
           action={
             microphone === "denied" ? (
-              <Button size="sm" variant="outline" onClick={() => api.openPrivacy("microphone")}>
-                Open Settings
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => run("mic", () => api.openPrivacy("microphone"))}>
+                {busy === "mic" && <Loader2 className="animate-spin" />} Open Settings
               </Button>
             ) : (
-              <Button size="sm" onClick={() => api.requestMicrophone().then(() => window.setTimeout(refresh, 800))}>
-                Allow
+              <Button
+                size="sm"
+                disabled={busy !== null}
+                onClick={() =>
+                  run("mic", async () => {
+                    await api.requestMicrophone();
+                    // The answer to macOS' prompt takes a moment to show up.
+                    await new Promise((r) => window.setTimeout(r, 800));
+                    await refresh();
+                  })
+                }
+              >
+                {busy === "mic" && <Loader2 className="animate-spin" />} Allow
               </Button>
             )
           }
         />
       </Panel>
-      <Nav onBack={onBack} onNext={onNext} hint={accessibility && micDone ? null : "You can also allow these later"} nextLabel={accessibility && micDone ? "Continue" : "Continue anyway"} />
+      <Nav onBack={onBack} onNext={onNext} busy={busy !== null} hint={accessibility && micDone ? null : "You can also allow these later"} nextLabel={accessibility && micDone ? "Continue" : "Continue anyway"} />
     </>
   );
 }
@@ -315,12 +332,12 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
       <Panel className="overflow-hidden">{body}</Panel>
       {!ready && !downloading && !downloaded ? (
         <div className="mt-6 flex items-center gap-3">
-          <Button variant="ghost" onClick={onBack}>
+          <Button variant="ghost" onClick={onBack} disabled={starting}>
             <ArrowLeft /> Back
           </Button>
           <span className="flex-1" />
           <Button onClick={download} disabled={starting}>
-            <Download /> Download
+            {starting ? <Loader2 className="animate-spin" /> : <Download />} Download
           </Button>
         </div>
       ) : (
@@ -381,7 +398,7 @@ function TryIt({ keyLabel, ready, onBack, onNext, refresh }: { keyLabel: string;
   );
 }
 
-function Done({ keyLabel, askKey, name, onFinish }: { keyLabel: string; askKey: string | null; name: string; onFinish: () => void }) {
+function Done({ keyLabel, askKey, name, finishing, onFinish }: { keyLabel: string; askKey: string | null; name: string; finishing: boolean; onFinish: () => void }) {
   const tips: [ReactNode, string][] = [
     [<Kbd key="h">{keyLabel}</Kbd>, "Hold to dictate, let go to type it"],
     [
@@ -417,8 +434,8 @@ function Done({ keyLabel, askKey, name, onFinish }: { keyLabel: string; askKey: 
         <span className="flex flex-1 items-center gap-1.5 text-xs text-muted-foreground">
           <ShieldCheck className="size-3.5" /> Everything stays on this Mac. You can run setup again from Settings.
         </span>
-        <Button onClick={onFinish}>
-          Open Murmur <ArrowRight />
+        <Button onClick={onFinish} disabled={finishing}>
+          Open Murmur {finishing ? <Loader2 className="animate-spin" /> : <ArrowRight />}
         </Button>
       </div>
     </>
@@ -428,6 +445,7 @@ function Done({ keyLabel, askKey, name, onFinish }: { keyLabel: string; askKey: 
 /** The assistant's AI: a one-time download, or skip and set it up later. */
 function BrainStep({ app, name, onBack, onNext, onSkip }: { app: ReturnType<typeof useAppState>; name: string; onBack: () => void; onNext: () => void; onSkip: () => void }) {
   const { state, refresh } = app;
+  const { busy, run } = useBusy();
   useEffect(() => {
     const unErr = events.downloadError((m) => toast.error(`Download failed — ${m}. Check your connection and try again.`));
     const id = window.setInterval(refresh, 2000);
@@ -439,6 +457,7 @@ function BrainStep({ app, name, onBack, onNext, onSkip }: { app: ReturnType<type
   const a = state?.assistant;
   if (!state || !a) return null;
   const progress = state.downloads.brain ?? null;
+  const starting = busy === "brain";
   const usesOllama = state.config.brain === "ollama";
   const ready = a.brain_ready || usesOllama;
   return (
@@ -461,22 +480,31 @@ function BrainStep({ app, name, onBack, onNext, onSkip }: { app: ReturnType<type
         </Item>
       </Panel>
       {!ready && (
-        <Button className="mt-4 w-full" disabled={progress !== null} onClick={() => api.downloadBrain().then(refresh)}>
-          {progress !== null ? <Loader2 className="animate-spin" /> : <Download />}
+        <Button
+          className="mt-4 w-full"
+          disabled={progress !== null || starting}
+          onClick={() =>
+            run("brain", async () => {
+              await api.downloadBrain();
+              await refresh();
+            }, "Couldn't start the download: ")
+          }
+        >
+          {progress !== null || starting ? <Loader2 className="animate-spin" /> : <Download />}
           {progress !== null ? "Downloading… it keeps going in the background" : `Download (${formatSize(a.brain_size_mb)})`}
         </Button>
       )}
       <div className="mt-6 flex items-center gap-3">
-        <Button variant="ghost" onClick={onBack}>
+        <Button variant="ghost" onClick={onBack} disabled={starting}>
           <ArrowLeft /> Back
         </Button>
         <span className="flex-1" />
         {!ready && (
-          <Button variant="ghost" onClick={onSkip}>
+          <Button variant="ghost" onClick={onSkip} disabled={starting}>
             Skip, maybe later
           </Button>
         )}
-        <Button variant={ready ? "default" : "outline"} onClick={onNext}>
+        <Button variant={ready ? "default" : "outline"} onClick={onNext} disabled={starting}>
           {ready ? "Continue" : "Continue anyway"} <ArrowRight />
         </Button>
       </div>
@@ -506,6 +534,7 @@ const languageName = (locale: string) => {
 
 function VoiceStep({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; onBack: () => void; onNext: () => void }) {
   const { state, setState } = app;
+  const { busy, run } = useBusy();
   // English voices, Indian and British first: the ones that suit an assistant best.
   const voices = useMemo(() => {
     const order = ["en_IN", "en_GB", "en_US", "en_AU", "en_IE", "en_ZA"];
@@ -514,12 +543,14 @@ function VoiceStep({ app, onBack, onNext }: { app: ReturnType<typeof useAppState
   }, [state?.assistant?.voices]);
   if (!state) return null;
   const c = state.config;
-  const pick = async (v: Voice) => {
-    const config = { ...c, voice: v.name };
-    setState((s) => (s ? { ...s, config } : s));
-    api.previewVoice(v.name, c.speech_rate);
-    await api.saveConfig(config).catch((e) => toast.error(`Couldn't save: ${e}`));
-  };
+  // Saved first, then the sample plays; the voices can't be clicked again until both are done.
+  const pick = (v: Voice) =>
+    run(v.name, async () => {
+      const config = { ...c, voice: v.name };
+      setState((s) => (s ? { ...s, config } : s));
+      await api.saveConfig(config);
+      await api.previewVoice("system", v.name, c.speech_rate);
+    }, "Couldn't save: ");
   return (
     <>
       <StepHeader title="Pick a voice">Click one to hear it. You can change it, or download more natural voices, any time in Settings.</StepHeader>
@@ -530,13 +561,15 @@ function VoiceStep({ app, onBack, onNext }: { app: ReturnType<typeof useAppState
             <button
               key={v.name}
               onClick={() => pick(v)}
+              disabled={busy !== null}
               className={cn(
-                "flex items-center gap-3 rounded-xl border bg-card px-3.5 py-3 text-left shadow-lift transition-colors",
-                active ? "border-primary ring-2 ring-primary/30" : "hover:border-foreground/20",
+                "flex items-center gap-3 rounded-xl border bg-card px-3.5 py-3 text-left shadow-lift transition-colors disabled:cursor-default",
+                active ? "border-primary ring-2 ring-primary/30" : "enabled:hover:border-foreground/20",
+                busy !== null && busy !== v.name && "opacity-60",
               )}
             >
               <span className={cn("grid size-8 shrink-0 place-items-center rounded-full", active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
-                {active ? <Check className="size-4" /> : <Play className="size-3.5" />}
+                {busy === v.name ? <Loader2 className="size-4 animate-spin" /> : active ? <Check className="size-4" /> : <Play className="size-3.5" />}
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-[13px] font-medium">{v.name.split(" (")[0]}</span>
@@ -546,7 +579,7 @@ function VoiceStep({ app, onBack, onNext }: { app: ReturnType<typeof useAppState
           );
         })}
       </div>
-      <Nav onBack={onBack} onNext={onNext} />
+      <Nav onBack={onBack} onNext={onNext} busy={busy !== null} />
     </>
   );
 }
@@ -557,17 +590,26 @@ function AskIt({ app, keyLabel, name, onBack, onNext }: { app: ReturnType<typeof
   const [draft, setDraft] = useState("");
   useEffect(() => {
     const un = events.reply(setReply);
-    const unErr = events.replyError((m) => toast.error(m));
+    // An answer that failed or was stopped mustn't leave the question box waiting for it.
+    const unfinished = (r: Reply | null) => (r && r.state !== "done" ? null : r);
+    const unErr = events.replyError((m) => {
+      toast.error(m);
+      setReply(unfinished);
+    });
+    const unStop = events.replyStopped(() => setReply(unfinished));
     return () => {
       un.then((u) => u());
       unErr.then((u) => u());
+      unStop.then((u) => u());
     };
   }, []);
   const worked = reply?.state === "done";
   const notReady = state && (!state.model_loaded || !!state.assistant?.unavailable);
+  // Thinking or speaking: one question at a time.
+  const answering = !!reply && reply.state !== "done";
   const ask = async () => {
     const q = draft.trim();
-    if (!q) return;
+    if (!q || answering) return;
     setDraft("");
     setReply({ state: "thinking", question: q, reply: "" });
     await api.ask(q).catch((e) => toast.error(String(e)));
@@ -595,12 +637,13 @@ function AskIt({ app, keyLabel, name, onBack, onNext }: { app: ReturnType<typeof
         </div>
         <div className="flex gap-2 border-t px-3 py-3">
           <Input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="Or type a question…" className="border-0 shadow-none focus-visible:ring-0" />
-          <Button size="icon" onClick={ask} disabled={!draft.trim()} aria-label="Ask">
-            <ArrowRight />
+          <Button size="icon" onClick={ask} disabled={!draft.trim() || answering} aria-label="Ask">
+            {answering ? <Loader2 className="animate-spin" /> : <ArrowRight />}
           </Button>
         </div>
       </Panel>
-      <Nav onBack={onBack} onNext={onNext} quiet={!worked} nextLabel={worked ? "Continue" : "Skip"} />
+      {/* Leaving mid-answer stops it, rather than letting it talk over the next step. */}
+      <Nav onBack={onBack} onNext={async () => { if (answering) await api.stop(); onNext(); }} quiet={!worked} nextLabel={worked ? "Continue" : "Skip"} />
     </>
   );
 }

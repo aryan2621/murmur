@@ -5,7 +5,9 @@ pub mod actions;
 pub mod brain;
 mod duck;
 pub mod history;
+pub mod kokoro;
 pub mod llm;
+mod player;
 pub mod speech;
 mod voice;
 
@@ -336,7 +338,7 @@ impl Assistant {
         Self {
             app: shared.app.clone(),
             brain: Brain::new(&cfg),
-            speaker: Speaker::new(&cfg.voice, cfg.speech_rate),
+            speaker: Speaker::new(&cfg),
             ducker: Ducker::new(),
             voice: VoiceDetector::new(),
             shared,
@@ -1101,6 +1103,12 @@ impl Assistant {
                     *core.last_warm_up.lock().unwrap() = None;
                 }
             }
+            // Then the AI voice, if one is chosen, so the first sentence doesn't wait for it.
+            if cfg.speak_replies {
+                if let Err(e) = core.speaker.warm_up() {
+                    mlog!("voice: {e}");
+                }
+            }
         });
     }
 
@@ -1141,11 +1149,39 @@ impl Assistant {
         });
     }
 
+    /// Downloads the natural voice (Settings → Voice). Safe to call repeatedly. Progress arrives
+    /// as `download-progress` events for "natural".
+    pub fn download_voice(self: &Arc<Self>) {
+        if kokoro::Kokoro::ready() || self.shared.downloading("natural") {
+            return;
+        }
+        self.shared.download_progress("natural", Some(0.0));
+        let core = self.clone();
+        std::thread::spawn(move || {
+            let result = model::ensure_natural(&config::data_dir(), |done, total| {
+                core.shared.download_progress("natural", Some(if total > 0 { done as f32 / total as f32 } else { 0.0 }));
+            });
+            core.shared.download_progress("natural", None);
+            match result {
+                Ok(()) => {
+                    mlog!("natural voice downloaded");
+                    *core.last_warm_up.lock().unwrap() = None;
+                    core.warm_up_llm();
+                }
+                Err(e) => {
+                    mlog!("natural voice download failed: {e}");
+                    let _ = core.app.emit_to("main", "download-error", format!("Natural voice: {e}"));
+                }
+            }
+        });
+    }
+
     /// Settings changed: point the AI and the voice at the new choices.
     pub fn configure(self: &Arc<Self>, old: &Config, new: &Config) {
         self.brain.configure(new);
-        if old.voice != new.voice || old.speech_rate != new.speech_rate {
-            self.speaker.configure(&new.voice, new.speech_rate);
+        let voice_changed = old.voice_engine != new.voice_engine || old.natural_voice != new.natural_voice;
+        if voice_changed || old.voice != new.voice || old.speech_rate != new.speech_rate {
+            self.speaker.configure(new);
         }
         let brain_changed = old.llm_model != new.llm_model || old.brain != new.brain || old.builtin_model != new.builtin_model || old.ollama_url != new.ollama_url;
         if brain_changed || (new.assistant_enabled && !old.assistant_enabled) {
@@ -1155,6 +1191,7 @@ impl Assistant {
         if !new.assistant_enabled && old.assistant_enabled {
             self.stop_all();
             self.brain.local.stop();
+            self.speaker.unload();
         }
     }
 }
@@ -1374,6 +1411,28 @@ fn with_time(question: &str) -> String {
     format!("{question}\n\n[It is now {now}.]")
 }
 
+/// Headless check of the voice set in Settings: `murmur --say "It's raining."`
+/// Speaks sentence by sentence, as an answer would be, and logs how long each step takes.
+/// `MURMUR_NATURAL=af_heart` tries a natural voice whatever Settings say.
+pub fn cli_say(text: &str) {
+    let mut cfg = config::load();
+    if let Ok(voice) = std::env::var("MURMUR_NATURAL") {
+        cfg.voice_engine = "natural".into();
+        cfg.natural_voice = voice;
+    }
+    let speaker = Speaker::new(&cfg);
+    let started = Instant::now();
+    let mut splitter = SentenceSplitter::default();
+    let mut sentences = splitter.push(&llm::speakable(text));
+    sentences.extend(splitter.finish());
+    for s in &sentences {
+        speaker.say(s);
+    }
+    speaker.wait(|| true);
+    eprintln!("{} sentences, {} ms in all", sentences.len(), started.elapsed().as_millis());
+    speaker.unload();
+}
+
 /// Headless check of the brain, actions and voice: `jarvis --ask "what's the weather in Pune?"`.
 pub fn cli_ask(question: &str) -> anyhow::Result<()> {
     use std::io::Write;
@@ -1405,7 +1464,7 @@ pub fn cli_ask(question: &str) -> anyhow::Result<()> {
     }
     let cfg = config::load();
     let brain = Brain::new(&cfg);
-    let speaker = Speaker::new(&cfg.voice, cfg.speech_rate);
+    let speaker = Speaker::new(&cfg);
     let messages = vec![Message::system(system_prompt(&cfg)), Message::user(with_time(question))];
     let splitter = std::cell::RefCell::new(SentenceSplitter::default());
     let started = Instant::now();
@@ -1448,5 +1507,6 @@ pub fn cli_ask(question: &str) -> anyhow::Result<()> {
     );
     speaker.wait(|| true);
     brain.local.stop();
+    speaker.unload();
     Ok(())
 }

@@ -69,7 +69,7 @@ let config: Config = {
   setup_done: !new URLSearchParams(location.search).has("setup"),
   assistant_hotkey: "right_option", assistant_enabled: true,
   brain: "builtin", builtin_model: "8b", ollama_url: "http://localhost:11434", llm_model: "qwen3:8b", keep_alive: "30m", system_prompt: null,
-  assistant_name: "Jarvis", voice: "Tara", speech_rate: 195, speak_replies: true,
+  assistant_name: "Jarvis", voice: "Tara", speech_rate: 195, voice_engine: "system", natural_voice: "af_heart", speak_replies: true,
   forget_after_minutes: 5, history_turns: 8, pause_seconds: 1.2, conversation_timeout_seconds: 20,
   speech_threshold: 0.012, actions: true, web_access: true, location: "",
 };
@@ -92,6 +92,7 @@ const state = (): AppState => ({
       { name: "Rishi", locale: "en_IN" }, { name: "Tara", locale: "en_IN" }, { name: "Lekha", locale: "hi_IN" },
       { name: "Karen", locale: "en_AU" }, { name: "Moira", locale: "en_IE" },
     ],
+    natural_ready: false, natural_size_mb: 316, natural_voices: [{ id: "af_heart", label: "Heart · American female" }, { id: "bm_george", label: "George · British male" }],
     brains: [
       { id: "8b", label: "Qwen3 8B", size_mb: 4795, min_ram_gb: 16, note: "The built-in AI. Accurate with multi-step tasks like clicking through pages and apps.", downloaded: !fresh },
       { id: "4b", label: "Qwen3 4B", size_mb: 2382, min_ram_gb: 8, note: "Lighter and quicker, for Macs with less than 16 GB of memory. Weaker at multi-step tasks.", downloaded: false },

@@ -18,6 +18,11 @@ fn main() {
         }
         return;
     }
+    #[cfg(target_os = "macos")]
+    if args.len() >= 3 && args[1] == "--say" {
+        murmur_lib::cli_say(&args[2..].join(" "));
+        return;
+    }
     if args.len() == 2 && args[1] == "--focus-test" {
         murmur_lib::cli_focus_test();
         return;

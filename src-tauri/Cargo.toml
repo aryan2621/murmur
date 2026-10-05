@@ -35,6 +35,12 @@ objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString", "NSDate", "NSError", "NSURL", "NSDictionary"] }
 objc2-vision = { version = "0.3", default-features = false, features = ["std", "VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-foundation"] }
 objc2-event-kit = { version = "0.3", default-features = false, features = ["std", "block2", "EKEventStore", "EKEvent", "EKCalendarItem", "EKObject", "EKTypes", "EKCalendar"] }
+# The AI voices' models (Kokoro, Orpheus' SNAC decoder). ONNX Runtime is downloaded at build time and linked statically.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-27"] }
+# The natural voice's pronunciation: misaki (Kokoro's own rules and dictionaries, built in) and,
+# for words it doesn't know, a pure-Rust eSpeak NG with its English data built in.
+misaki-rs = { version = "=0.6.0", default-features = false }
+espeak-ng = { version = "=0.2.0", default-features = false, features = ["bundled-data-en", "bundled-data-hi"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = "0.16"

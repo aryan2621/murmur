@@ -33,8 +33,12 @@ charts use Recharts via shadcn's chart components. The floating widget is a stat
 The Rust core lives in `src-tauri/src/`: `lib.rs` holds what both modes share (settings, the mic,
 the speech model, one key tap for both keys, the widget, the menu bar), `dictation.rs` the
 dictation flow, and `assistant/` the assistant: `brain.rs` (runs the bundled llama.cpp server, or
-Ollama), `llm.rs` (streaming, sentence splitting), `actions/` (the tools) and `speech.rs`
-(interruptible `say` queue). `scripts/build-llama-server.sh` builds the server as one static
+Ollama), `llm.rs` (streaming, sentence splitting), `actions/` (the tools), `speech.rs`
+(interruptible speech queue: `say`, or the natural voice), `kokoro.rs` (the natural voice: misaki
+plus a pure-Rust eSpeak NG turn text into phonemes, Devanagari runs through eSpeak NG's Hindi
+rules into a Hindi voice, and Kokoro 82M on ONNX Runtime turns them into sound) and `player.rs`
+(plays its clips through cpal). Note: eSpeak NG (the `espeak-ng` crate and its data) is
+GPL-3.0-or-later. `scripts/build-llama-server.sh` builds the server as one static
 binary that Tauri bundles as a sidecar (macOS only, via `tauri.macos.conf.json`).
 
 ## Commands
@@ -47,6 +51,7 @@ pnpm typecheck                     # TypeScript check
 ./src-tauri/target/release/murmur --transcribe clip.wav   # test the speech pipeline headlessly
 ./src-tauri/target/release/murmur --ask "what's the weather in Pune?"   # test the AI, actions + voice headlessly
 MURMUR_QUIET=1 ./src-tauri/target/release/murmur --ask "…"               # same, without speaking
+MURMUR_NATURAL=af_heart ./src-tauri/target/release/murmur --say "It's raining."  # test the natural voice
 MURMUR_DEBUG=1 MURMUR_QUIET=1 ./src-tauri/target/release/murmur --ask "…" # also print each tool result
 MURMUR_YES=1 …                                                           # answer yes to confirmations
 open -n --env MURMUR_ASK="set a 1 minute timer" /Applications/Murmur.app # ask inside the app

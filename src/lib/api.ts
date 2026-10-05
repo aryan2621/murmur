@@ -38,6 +38,10 @@ export interface Config {
   assistant_name: string;
   voice: string;
   speech_rate: number;
+  /** "system" (macOS voices) or "natural" (Kokoro, an AI voice that runs on the Mac). */
+  voice_engine: "system" | "natural";
+  /** Natural voice's speaker: "af_heart", "bm_george", … */
+  natural_voice: string;
   speak_replies: boolean;
   forget_after_minutes: number;
   history_turns: number;
@@ -75,6 +79,9 @@ export interface AssistantState {
   brain_size_mb: number;
   ollama: { running: boolean; models: string[]; error: string | null };
   voices: Voice[];
+  natural_ready: boolean;
+  natural_size_mb: number;
+  natural_voices: { id: string; label: string }[];
   brains: BrainInfo[];
   ram_gb: number;
 }
@@ -87,14 +94,16 @@ export interface ModelInfo {
   downloaded: boolean;
 }
 
+export type DownloadKey = "speech" | "brain" | "natural";
+
 export interface AppState {
   config: Config;
   status: string;
   model_loaded: boolean;
   /** 0–1 while the speech model downloads, otherwise null. */
   model_progress: number | null;
-  /** Downloads in progress (0–1), keyed "speech" / "brain". */
-  downloads: Partial<Record<"speech" | "brain", number>>;
+  /** Downloads in progress (0–1), keyed "speech" / "brain" / "voice" (the natural voice). */
+  downloads: Partial<Record<DownloadKey, number>>;
   permissions: { accessibility: boolean; microphone: "granted" | "denied" | "not_asked" | "unknown" };
   models: ModelInfo[];
   devices: string[];
@@ -176,7 +185,8 @@ export const api = {
   deleteExchange: (time: string) => invoke<void>("assistant_history_delete", { time }),
   clearExchanges: () => invoke<void>("assistant_history_clear"),
   downloadBrain: () => invoke<void>("download_brain"),
-  previewVoice: (voice: string, rate: number) => invoke<void>("preview_voice", { voice, rate }),
+  downloadVoice: () => invoke<void>("download_voice"),
+  previewVoice: (engine: Config["voice_engine"], voice: string, rate: number) => invoke<void>("preview_voice", { engine, voice, rate }),
   stop: () => invoke<void>("stop_speaking"),
   ask: (question: string) => invoke<void>("ask_text", { question }),
   newConversation: () => invoke<void>("new_conversation"),
@@ -189,8 +199,8 @@ export const events = {
   historyUpdated: (cb: () => void) => listen("history-updated", () => cb()),
   navigate: (cb: (tab: string) => void) => listen<string>("navigate", (e) => cb(e.payload)),
   dictation: (cb: (text: string) => void) => listen<string>("dictation", (e) => cb(e.payload)),
-  downloadProgress: (cb: (p: { model: "speech" | "brain"; progress: number | null }) => void) =>
-    listen<{ model: "speech" | "brain"; progress: number | null }>("download-progress", (e) => cb(e.payload)),
+  downloadProgress: (cb: (p: { model: DownloadKey; progress: number | null }) => void) =>
+    listen<{ model: DownloadKey; progress: number | null }>("download-progress", (e) => cb(e.payload)),
   downloadError: (cb: (message: string) => void) => listen<string>("download-error", (e) => cb(e.payload)),
   // Assistant
   reply: (cb: (r: Reply) => void) => listen<Reply>("reply", (e) => cb(e.payload)),

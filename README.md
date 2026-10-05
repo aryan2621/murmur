@@ -8,8 +8,8 @@
 - **Assistant (Jarvis):** hold **Right Option** and ask. It answers out loud, or does it for you:
   searches the web, reads your screen, opens apps, sets timers, plays music and more.
 
-Everything runs on your Mac (Whisper for speech, a built-in Qwen3 AI, the macOS voice). Your
-voice and conversations never leave it; with web access on, only search words and page
+Everything runs on your Mac (Whisper for speech, a built-in Qwen3 AI, the macOS voice or an
+optional natural AI voice that also speaks Hindi). Your voice and conversations never leave it; with web access on, only search words and page
 addresses go online.
 
 **[⬇ Download for macOS](https://github.com/aryan2621/desktop-apps/releases/latest/download/Murmur_0.1.0_aarch64.dmg)**

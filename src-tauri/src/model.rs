@@ -1,6 +1,6 @@
 //! One-time downloads of the models Murmur runs on this machine: the Whisper speech model
 //! (from the official whisper.cpp Hugging Face repo), shared by dictation and the assistant, and
-//! the assistant's built-in AI model (a GGUF file).
+//! the assistant's built-in AI model (a GGUF file), and the optional natural voice (Kokoro).
 
 use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
@@ -46,6 +46,80 @@ pub const BRAINS: [BrainModel; 2] = [
         note: "Lighter and quicker, for Macs with less than 16 GB of memory. Weaker at multi-step tasks.",
     },
 ];
+
+/// The natural voice: Kokoro 82M, small enough to speak several times faster than real time.
+const KOKORO_BASE: &str = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main";
+const KOKORO_MODEL: (&str, &str, u64) = ("kokoro-82m-v1.0.onnx", "onnx/model.onnx", 325_532_232);
+/// Each voice is a small table of style vectors (510 × 256 floats).
+const KOKORO_VOICE_BYTES: u64 = 522_240;
+
+/// The natural voice's speakers, best first: (id, name shown). "a" = American, "b" = British;
+/// then "f" female, "m" male.
+pub const NATURAL_VOICES: [(&str, &str); 11] = [
+    ("af_heart", "Heart · American female"),
+    ("af_bella", "Bella · American female"),
+    ("af_nicole", "Nicole · American female, soft"),
+    ("af_sarah", "Sarah · American female"),
+    ("am_michael", "Michael · American male"),
+    ("am_fenrir", "Fenrir · American male"),
+    ("am_puck", "Puck · American male"),
+    ("bf_emma", "Emma · British female"),
+    ("bf_isabella", "Isabella · British female"),
+    ("bm_george", "George · British male"),
+    ("bm_fable", "Fable · British male"),
+];
+
+fn natural_files() -> Vec<(String, String, u64)> {
+    let mut files = vec![(KOKORO_MODEL.0.to_string(), format!("{KOKORO_BASE}/{}", KOKORO_MODEL.1), KOKORO_MODEL.2)];
+    for (id, _) in NATURAL_VOICES {
+        files.push((format!("kokoro-voices/{id}.bin"), format!("{KOKORO_BASE}/voices/{id}.bin"), KOKORO_VOICE_BYTES));
+    }
+    files
+}
+
+/// Voices for Hindi (Devanagari) sentences, female and male; fetched the first time one is needed.
+pub const HINDI_VOICES: [&str; 2] = ["hf_alpha", "hm_omega"];
+
+/// Downloads one natural voice's style table if it's missing (about half a MB).
+pub fn ensure_natural_voice(dir: &Path, id: &str) -> Result<()> {
+    download(&format!("{KOKORO_BASE}/voices/{id}.bin"), &natural_voice_path(dir, id), |_, _| {})
+}
+
+/// Download size of the natural voice, in MB.
+pub fn natural_size_mb() -> u32 {
+    (natural_files().iter().map(|f| f.2).sum::<u64>() >> 20) as u32
+}
+
+pub fn natural_model_path(dir: &Path) -> PathBuf {
+    dir.join("models").join(KOKORO_MODEL.0)
+}
+
+/// A natural voice's style table (`id` from `NATURAL_VOICES`).
+pub fn natural_voice_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join("models").join("kokoro-voices").join(format!("{id}.bin"))
+}
+
+pub fn natural_ready(dir: &Path) -> bool {
+    natural_files().iter().all(|f| dir.join("models").join(&f.0).exists())
+}
+
+/// Downloads whatever part of the natural voice is missing.
+pub fn ensure_natural(dir: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
+    download_all(dir, &natural_files(), progress)
+}
+
+/// Downloads the files (name in the models folder, url, size) that are missing; progress covers
+/// all of them.
+fn download_all(dir: &Path, files: &[(String, String, u64)], progress: impl Fn(u64, u64)) -> Result<()> {
+    let total: u64 = files.iter().map(|f| f.2).sum();
+    let mut before = 0;
+    for (file, url, size) in files {
+        download(url, &dir.join("models").join(file), |done, _| progress(before + done, total))?;
+        before += size;
+    }
+    progress(total, total);
+    Ok(())
+}
 
 /// The model with this id (the first one if it's unknown).
 pub fn brain(id: &str) -> &'static BrainModel {

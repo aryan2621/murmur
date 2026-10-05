@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, AudioLines, Brain, FolderOpen, Info, Keyboard, MessagesSquare, Play, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Volume2, X, Zap, type LucideIcon } from "lucide-react";
+import { ArrowRight, AudioLines, Brain, FolderOpen, Info, Loader2, Keyboard, MessagesSquare, Play, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Volume2, X, Zap, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { cn } from "@/lib/utils";
 import { api, type Config, type Replacement, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
+import { useBusy } from "@/hooks/use-busy";
 
 const LANGUAGES: [string, string][] = [
   ["en", "English"], ["auto", "Detect automatically"], ["hi", "Hindi"], ["bn", "Bengali"], ["mr", "Marathi"],
@@ -135,6 +136,17 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [location, setLocation] = useState("");
+  // A button's action (download, preview…) under way: the pane takes no clicks until it's done.
+  const { busy, run } = useBusy();
+  // Settings still being saved and applied (some restart a model).
+  const [saving, setSaving] = useState(false);
+  // Only say so when it takes a moment, so quick saves don't flash.
+  const [showSaving, setShowSaving] = useState(false);
+  useEffect(() => {
+    if (!saving && !busy) return setShowSaving(false);
+    const id = window.setTimeout(() => setShowSaving(true), 250);
+    return () => window.clearTimeout(id);
+  }, [saving, busy]);
   const loaded = useRef(false);
   const savedConfig = useRef<Config | null>(null);
   const saveQueue = useRef(Promise.resolve());
@@ -163,6 +175,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   async function save(patch: Partial<Config>) {
     savedConfig.current ??= state!.config;
     ++pendingSaves.current;
+    setSaving(true);
     setState((s) => (s ? { ...s, config: { ...s.config, ...patch } } : s));
     // Persist patches in order, starting from the last successful save. Rapid changes
     // must not overwrite each other with snapshots from an older render.
@@ -181,6 +194,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       } finally {
         if (--pendingSaves.current === 0) {
           setState((s) => (s ? { ...s, config: savedConfig.current! } : s));
+          setSaving(false);
         }
       }
     });
@@ -377,7 +391,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                   </SelectContent>
                 </Select>
                 {!a.brain_ready && (
-                  <Button size="sm" variant="outline" disabled={state.downloads.brain != null} onClick={() => api.downloadBrain()}>
+                  <Button size="sm" variant="outline" disabled={busy !== null || state.downloads.brain != null} onClick={() => run("brain", api.downloadBrain, "Couldn't start the download: ")}>
+                    {(busy === "brain" || state.downloads.brain != null) && <Loader2 className="animate-spin" />}
                     {state.downloads.brain != null ? `${Math.round((state.downloads.brain ?? 0) * 100)}%` : "Download"}
                   </Button>
                 )}
@@ -462,38 +477,90 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     voice: !a || !c.assistant_enabled ? off : (
           <Section>
             <Row
-              id="voice"
-              title="Voice"
+              id="engine"
+              title="Voice type"
               description={
-                <>
-                  Built-in macOS voices. ▶ plays a sample.{" "}
-                  <button className="text-primary underline-offset-2 hover:underline" onClick={() => api.openVoiceSettings()}>
-                    Get more natural Premium voices
-                  </button>
-                </>
+                c.voice_engine === "natural"
+                  ? `A natural AI voice that runs on this Mac and starts about as quickly as the macOS voices. ${a.natural_ready ? "Downloaded and ready." : `Downloads ${formatSize(a.natural_size_mb)} once.`}`
+                  : "The voices built into macOS: instant, but they can sound robotic."
               }
             >
-              <div className="flex items-center gap-1">
-                <Select value={c.voice} onValueChange={(v) => save({ voice: v })}>
-                  <SelectTrigger id="voice" className="w-60"><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-80">
-                    {voiceGroups.map(([lang, list]) => (
-                      <SelectGroup key={lang}>
-                        <SelectLabel>{lang}</SelectLabel>
-                        {list.map((v) => <SelectItem key={v.name} value={v.name}>{v.name}</SelectItem>)}
-                      </SelectGroup>
-                    ))}
-                    {!a.voices.some((v) => v.name === c.voice) && <SelectItem value={c.voice}>{c.voice}</SelectItem>}
-                  </SelectContent>
-                </Select>
-                <Button variant="ghost" size="icon" aria-label="Play sample" onClick={() => api.previewVoice(c.voice, c.speech_rate)}>
-                  <Play />
-                </Button>
+              <div className="flex items-center gap-2">
+                <Choice
+                  id="engine"
+                  className="w-48"
+                  value={c.voice_engine}
+                  options={[
+                    ["system", "macOS voices"],
+                    ["natural", "Natural (AI)"],
+                  ]}
+                  onChange={(v) => save({ voice_engine: v })}
+                />
+                {c.voice_engine === "natural" && !a.natural_ready && (
+                  <Button size="sm" variant="outline" disabled={busy !== null || state.downloads.natural != null} onClick={() => run("natural", api.downloadVoice, "Couldn't start the download: ")}>
+                    {(busy === "natural" || state.downloads.natural != null) && <Loader2 className="animate-spin" />}
+                    {state.downloads.natural != null ? `${Math.round((state.downloads.natural ?? 0) * 100)}%` : "Download"}
+                  </Button>
+                )}
               </div>
             </Row>
-            <Row id="rate" title="Speed" description="How fast answers are spoken.">
-              <Choice id="rate" className="w-44" value={c.speech_rate} options={RATES} format={(v) => `${v} wpm`} onChange={(v) => save({ speech_rate: v })} />
-            </Row>
+            {c.voice_engine === "natural" ? (
+              <>
+                <Row id="natural-voice" title="Voice" description={a.natural_ready ? "▶ plays a sample." : "Until it's downloaded, answers use the macOS voice."}>
+                  <div className="flex items-center gap-1">
+                    <Select value={c.natural_voice} onValueChange={(v) => save({ natural_voice: v })}>
+                      <SelectTrigger id="natural-voice" className="w-64"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {a.natural_voices.map((v) => <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>)}
+                        {!a.natural_voices.some((v) => v.id === c.natural_voice) && <SelectItem value={c.natural_voice}>{c.natural_voice}</SelectItem>}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="ghost" size="icon" aria-label="Play sample" disabled={!a.natural_ready || busy !== null} onClick={() => run("preview", () => api.previewVoice("natural", c.natural_voice, c.speech_rate), "Couldn't play the sample: ")}>
+                      {busy === "preview" ? <Loader2 className="animate-spin" /> : <Play />}
+                    </Button>
+                  </div>
+                </Row>
+                <Row id="rate" title="Speed" description="How fast answers are spoken.">
+                  <Choice id="rate" className="w-44" value={c.speech_rate} options={RATES} format={(v) => `${v} wpm`} onChange={(v) => save({ speech_rate: v })} />
+                </Row>
+              </>
+            ) : (
+              <>
+                <Row
+                  id="voice"
+                  title="Voice"
+                  description={
+                    <>
+                      Built-in macOS voices. ▶ plays a sample.{" "}
+                      <button className="text-primary underline-offset-2 hover:underline" onClick={() => api.openVoiceSettings()}>
+                        Get more natural Premium voices
+                      </button>
+                    </>
+                  }
+                >
+                  <div className="flex items-center gap-1">
+                    <Select value={c.voice} onValueChange={(v) => save({ voice: v })}>
+                      <SelectTrigger id="voice" className="w-60"><SelectValue /></SelectTrigger>
+                      <SelectContent className="max-h-80">
+                        {voiceGroups.map(([lang, list]) => (
+                          <SelectGroup key={lang}>
+                            <SelectLabel>{lang}</SelectLabel>
+                            {list.map((v) => <SelectItem key={v.name} value={v.name}>{v.name}</SelectItem>)}
+                          </SelectGroup>
+                        ))}
+                        {!a.voices.some((v) => v.name === c.voice) && <SelectItem value={c.voice}>{c.voice}</SelectItem>}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="ghost" size="icon" aria-label="Play sample" disabled={busy !== null} onClick={() => run("preview", () => api.previewVoice("system", c.voice, c.speech_rate), "Couldn't play the sample: ")}>
+                      {busy === "preview" ? <Loader2 className="animate-spin" /> : <Play />}
+                    </Button>
+                  </div>
+                </Row>
+                <Row id="rate" title="Speed" description="How fast answers are spoken.">
+                  <Choice id="rate" className="w-44" value={c.speech_rate} options={RATES} format={(v) => `${v} wpm`} onChange={(v) => save({ speech_rate: v })} />
+                </Row>
+              </>
+            )}
             <Row id="speak" title="Speak answers" description="Off: answers only appear on screen.">
               <Switch id="speak" checked={c.speak_replies} onCheckedChange={(v) => save({ speak_replies: v })} />
             </Row>
@@ -524,10 +591,13 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               <Switch
                 id="login"
                 checked={state.login_enabled}
-                onCheckedChange={async (v) => {
-                  const enabled = await api.setLogin(v);
-                  setState((s) => (s ? { ...s, login_enabled: enabled } : s));
-                }}
+                disabled={busy !== null}
+                onCheckedChange={(v) =>
+                  run("login", async () => {
+                    const enabled = await api.setLogin(v);
+                    setState((s) => (s ? { ...s, login_enabled: enabled } : s));
+                  }, "Couldn't change it: ")
+                }
               />
             </Row>
           </Section>
@@ -559,8 +629,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               </Button>
             </Row>
             <Row title={`Murmur ${state.version}`} description={<span data-selectable>{state.data_dir}</span>}>
-              <Button variant="outline" size="sm" onClick={() => api.openDataFolder().catch((e) => toast.error(`Couldn't open the folder: ${e}`))}>
-                <FolderOpen /> Show data folder
+              <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => run("folder", api.openDataFolder, "Couldn't open the folder: ")}>
+                {busy === "folder" ? <Loader2 className="animate-spin" /> : <FolderOpen />} Show data folder
               </Button>
             </Row>
           </Section>
@@ -603,10 +673,17 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="shrink-0 px-8 pt-6 pb-4">
-          <h2 className="font-display text-2xl">{active.label}</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="font-display text-2xl">{active.label}</h2>
+            {showSaving && (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
+                <Loader2 className="size-3.5 animate-spin" /> {busy === "preview" ? "Getting the voice ready…" : "Applying…"}
+              </span>
+            )}
+          </div>
           <DialogDescription className="mt-1">{active.description}</DialogDescription>
         </header>
-        <div key={active.id} className="flex-1 overflow-y-auto px-8 pb-8">
+        <div key={active.id} aria-busy={saving || busy !== null} className={cn("flex-1 overflow-y-auto px-8 pb-8", (saving || busy !== null) && "pointer-events-none")}>
           {panes[active.id]}
         </div>
       </div>

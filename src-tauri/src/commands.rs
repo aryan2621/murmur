@@ -1,5 +1,9 @@
 //! Commands invoked by the main app window (Home / Assistant / Insights / History / Settings).
 
+// Every command is `async`: Tauri then runs it on a worker thread instead of the main thread,
+// so one that takes a while (listing voices, saving settings that restart a model, previewing a
+// voice) never freezes the window or swallows clicks.
+
 use crate::config::{self, Config};
 use crate::{audio, history, model, paste, Shared};
 use serde::Serialize;
@@ -58,6 +62,13 @@ pub struct OllamaState {
     error: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Serialize)]
+pub struct NaturalVoice {
+    id: &'static str,
+    label: &'static str,
+}
+
 /// What the assistant needs shown: its AI, voices, and why it can't answer (if it can't).
 #[cfg(target_os = "macos")]
 #[derive(Serialize)]
@@ -68,6 +79,10 @@ pub struct AssistantState {
     brain_size_mb: u32,
     ollama: OllamaState,
     voices: Vec<assistant::speech::Voice>,
+    /// The natural voice: downloaded yet, its download size, and its speakers.
+    natural_ready: bool,
+    natural_size_mb: u32,
+    natural_voices: Vec<NaturalVoice>,
     /// The built-in AI models to choose from, and the Mac's memory to choose by.
     brains: Vec<BrainInfo>,
     ram_gb: u32,
@@ -138,12 +153,15 @@ fn assistant_state(a: &Assistant, cfg: &Config) -> AssistantState {
         brain_size_mb: model::brain(&cfg.builtin_model).size_mb,
         ollama,
         voices: assistant::speech::voices(),
+        natural_ready: model::natural_ready(&dir),
+        natural_size_mb: model::natural_size_mb(),
+        natural_voices: model::NATURAL_VOICES.iter().map(|&(id, label)| NaturalVoice { id, label }).collect(),
         brains: model::BRAINS.iter().map(|b| BrainInfo { model: b, downloaded: model::brain_path(&dir, b.id).exists() }).collect(),
         ram_gb: model::ram_gb(),
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
     use tauri_plugin_autostart::ManagerExt;
     let cfg = shared.cfg();
@@ -180,7 +198,7 @@ pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
 
 /// Saves and applies settings. A key change restarts the app (the key tap is set up once);
 /// a model change downloads/loads it in the background; everything else applies immediately.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_config(app: AppHandle, shared: State<'_, Arc<Shared>>, config: Config) -> Result<SaveResult, String> {
     if config.assistant_enabled && config.assistant_hotkey == config.hotkey {
         return Err("Dictation and the assistant need different keys".into());
@@ -211,7 +229,7 @@ pub fn save_config(app: AppHandle, shared: State<'_, Arc<Shared>>, config: Confi
 }
 
 /// Newest first. `limit` defaults to 500; Insights asks for everything.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_list(query: String, limit: Option<usize>) -> Vec<history::Entry> {
     history::search(&query, limit.unwrap_or(500))
 }
@@ -225,33 +243,33 @@ pub struct HistoryPage<T> {
 }
 
 /// Page `page` (from 0) of `page_size` dictations matching `query`, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_page(query: String, page: usize, page_size: usize) -> HistoryPage<history::Entry> {
     let (entries, total) = history::page(&query, page, page_size.max(1));
     HistoryPage { entries, total }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_delete(time: String) -> Result<(), String> {
     history::delete(&time).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_clear() -> Result<(), String> {
     history::clear().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_stats() -> history::Stats {
     history::stats()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_text(text: String) -> Result<(), String> {
     paste::copy(&text).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_login(app: AppHandle, enabled: bool) -> bool {
     use tauri_plugin_autostart::ManagerExt;
     let auto = app.autolaunch();
@@ -263,7 +281,7 @@ pub fn set_login(app: AppHandle, enabled: bool) -> bool {
 }
 
 /// Shows the system permission prompt (if not decided yet) and opens the right Settings pane.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_privacy(pane: String) {
     if pane == "accessibility" {
         paste::has_permission(true);
@@ -279,7 +297,7 @@ pub fn open_privacy(pane: String) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_data_folder() -> Result<(), String> {
     crate::open_path(&config::data_dir())
 }
@@ -315,19 +333,19 @@ fn notes_path() -> std::path::PathBuf {
 }
 
 /// The Home scratchpad, stored as plain text on this machine.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_notes() -> String {
     std::fs::read_to_string(notes_path()).unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_notes(text: String) -> Result<(), String> {
     std::fs::write(notes_path(), text).map_err(|e| e.to_string())
 }
 
 /// Setup: makes macOS ask for microphone access (does nothing once it's been answered; if it
 /// was denied, setup offers System Settings instead).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn request_microphone() {
     #[cfg(target_os = "macos")]
     request_microphone_access();
@@ -335,7 +353,7 @@ pub fn request_microphone() {
 
 /// Setup's download step: saves the chosen model and downloads/loads it in the background.
 /// Progress arrives as `download-progress` events.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn download_model(shared: State<'_, Arc<Shared>>, model: String) -> Result<(), String> {
     let mut cfg = shared.cfg();
     cfg.model = model;
@@ -347,7 +365,7 @@ pub fn download_model(shared: State<'_, Arc<Shared>>, model: String) -> Result<(
 }
 
 /// Setup is complete (or skipped): don't show it on launch again.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finish_setup(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
     let mut cfg = shared.cfg();
     cfg.setup_done = true;
@@ -363,36 +381,50 @@ pub fn finish_setup(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
 
 /// Downloads the assistant's built-in AI (progress arrives as `download-progress`).
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn download_brain(assistant: State<'_, Arc<Assistant>>) {
     assistant.inner().download_brain();
 }
 
-/// Says a sample sentence in `voice` so it can be compared before choosing it.
+/// Downloads the natural voice (progress arrives as `download-progress` for "natural").
 #[cfg(target_os = "macos")]
-#[tauri::command]
-pub fn preview_voice(assistant: State<'_, Arc<Assistant>>, voice: String, rate: u32) {
+#[tauri::command(async)]
+pub fn download_voice(assistant: State<'_, Arc<Assistant>>) {
+    assistant.inner().download_voice();
+}
+
+/// Says a sample sentence in `voice` so it can be compared before choosing it. `engine` is
+/// "system" (a macOS voice) or "natural" (one of its speakers).
+#[cfg(target_os = "macos")]
+#[tauri::command(async)]
+pub fn preview_voice(assistant: State<'_, Arc<Assistant>>, engine: Option<String>, voice: String, rate: u32) {
+    let engine = engine.unwrap_or_else(|| "system".into());
     let short = voice.split(" (").next().unwrap_or(&voice);
-    let text = format!("Hi, I'm {short}. Your meeting is at three thirty, and it may rain this evening.");
-    assistant.speaker.preview(&voice, rate, &text);
+    let text = if engine == "natural" {
+        let name = model::NATURAL_VOICES.iter().find(|(id, _)| *id == voice).map_or("your assistant", |(_, label)| label.split(" ·").next().unwrap_or(label));
+        format!("Hi, I'm {name}. Your meeting is at three thirty, and it may rain this evening.")
+    } else {
+        format!("Hi, I'm {short}. Your meeting is at three thirty, and it may rain this evening.")
+    };
+    assistant.speaker.preview(&engine, &voice, rate, &text);
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_speaking(assistant: State<'_, Arc<Assistant>>) {
     assistant.inner().stop_all();
 }
 
 /// Asks a typed question; the answer streams back through the `reply` event and is spoken.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ask_text(assistant: State<'_, Arc<Assistant>>, question: String) -> Result<(), String> {
     assistant.inner().ask_typed(question.trim()).map_err(|e| e.to_string())
 }
 
 /// The widget's Yes / No buttons while the assistant asks before a risky action.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn confirm_answer(assistant: State<'_, Arc<Assistant>>, yes: bool) {
     if let Some(tx) = assistant.pending_confirm.lock().unwrap().as_ref() {
         let _ = tx.send(yes);
@@ -400,14 +432,14 @@ pub fn confirm_answer(assistant: State<'_, Arc<Assistant>>, yes: bool) {
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn new_conversation(assistant: State<'_, Arc<Assistant>>) {
     assistant.inner().new_conversation();
 }
 
 /// Opens System Settings where Premium / Enhanced voices can be downloaded.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_voice_settings() {
     let url = "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent";
     let _ = std::process::Command::new("open").arg(url).spawn();
@@ -415,21 +447,21 @@ pub fn open_voice_settings() {
 
 /// The assistant's questions and answers, newest first. `limit` defaults to 500.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assistant_history_list(query: String, limit: Option<usize>) -> Vec<assistant::history::Entry> {
     assistant::history::search(&query, limit.unwrap_or(500))
 }
 
 /// Page `page` (from 0) of `page_size` questions and answers matching `query`, newest first.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assistant_history_page(query: String, page: usize, page_size: usize) -> HistoryPage<assistant::history::Entry> {
     let (entries, total) = assistant::history::page(&query, page, page_size.max(1));
     HistoryPage { entries, total }
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assistant_history_delete(app: AppHandle, time: String) -> Result<(), String> {
     assistant::history::delete(&time).map_err(|e| e.to_string())?;
     let _ = app.emit_to("main", "history-updated", ());
@@ -437,7 +469,7 @@ pub fn assistant_history_delete(app: AppHandle, time: String) -> Result<(), Stri
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assistant_history_clear(app: AppHandle) -> Result<(), String> {
     assistant::history::clear().map_err(|e| e.to_string())?;
     let _ = app.emit_to("main", "history-updated", ());

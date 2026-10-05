@@ -146,7 +146,9 @@ Assistant (macOS):
 | `llm_model` | `qwen3:8b` | With `brain: ollama`: any model from `ollama list` |
 | `keep_alive` | `30m` | How long the AI stays in memory after a question (`-1` = always) |
 | `voice` | `Daniel` | Any name from `say -v '?'`. Premium voices sound much better: System Settings → Accessibility → Spoken Content → Manage Voices |
-| `speech_rate` | `195` | Words per minute |
+| `speech_rate` | `195` | Words per minute (the natural voice follows it too) |
+| `voice_engine` | `system` | `system` (macOS voices) or `natural`: a natural AI voice (Kokoro) that runs on the Mac. One-time 330 MB download in Settings → Voice. Hindi written in Devanagari is spoken in a Hindi voice (fetched once, about 0.5 MB); to *ask* in Hindi, set `language` to `hi` or `auto` |
+| `natural_voice` | `af_heart` | Natural voice: `af_heart`, `af_bella`, `af_nicole`, `af_sarah`, `am_michael`, `am_fenrir`, `am_puck`, `bf_emma`, `bf_isabella`, `bm_george` or `bm_fable` |
 | `pause_seconds` | `1.2` | Conversation mode: silence that sends what you said. Raise it if it cuts you off mid-thought |
 | `conversation_timeout_seconds` | `20` | Conversation ends after this long without hearing you |
 | `speech_threshold` | `0.012` | Mic level that counts as speech. Raise in a noisy room, lower if it misses a quiet voice |

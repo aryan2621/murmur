@@ -59,6 +59,11 @@ pub struct Config {
     pub voice: String,
     /// Speaking rate in words per minute.
     pub speech_rate: u32,
+    /// "system" (the macOS voice above) or "natural" (Kokoro: a natural AI voice that runs on this
+    /// Mac and starts about as quickly; about 330 MB once).
+    pub voice_engine: String,
+    /// The natural voice's speaker, one of `model::NATURAL_VOICES` ("af_heart", "bm_george", …).
+    pub natural_voice: String,
     /// Speak answers aloud. Off = answers only appear in the widget.
     pub speak_replies: bool,
     /// Start a fresh conversation after this many minutes without a question.
@@ -115,6 +120,8 @@ impl Default for Config {
             assistant_name: "Jarvis".into(),
             voice: "Daniel".into(),
             speech_rate: 195,
+            voice_engine: "system".into(),
+            natural_voice: "af_heart".into(),
             speak_replies: true,
             forget_after_minutes: 5,
             history_turns: 8,

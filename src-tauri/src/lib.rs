@@ -190,6 +190,8 @@ impl Shared {
             if !widget_drag::dragging(&app) {
                 place_widget_quietly(&app, &w, mode);
             }
+            #[cfg(target_os = "macos")]
+            panel::keep_on_active_space(&w);
         });
     }
 
@@ -559,18 +561,58 @@ mod panel {
                 // the desktop's Space instead of over the full-screen app being dictated into.
                 let ns = panel.as_panel();
                 let before = ns.collectionBehavior();
-                if before != behavior() {
+                if before != behavior() && before != follow_behavior() {
                     mlog!("widget: Spaces behavior was {:#x}, setting it again", before.0);
                 }
                 ns.setCollectionBehavior(behavior());
                 ns.setLevel(STATUS_WINDOW_LEVEL as isize);
                 panel.show();
-                if !ns.isOnActiveSpace() {
-                    mlog!("widget: shown, but not on the Space in front (behavior {:#x})", ns.collectionBehavior().0);
-                }
+                // Like Capturita's camera bubble: in front of everything, whichever app is active.
+                ns.orderFrontRegardless();
             }
         });
+        // Where it ended up is only known once the window server has caught up.
+        let win = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            keep_on_active_space(&win);
+        });
         true
+    }
+
+    /// The widget, converted to a panel after Tauri made it, doesn't always take "join all
+    /// Spaces" from macOS: it then stays on the Space it was last shown on (the desktop, or
+    /// Murmur's window) instead of over the app in front. If so, it's switched to moving to
+    /// the active Space and ordered in again, which brings it to the Space in front. Called
+    /// after each showing and while it's up, so switching Spaces mid-dictation is followed too.
+    pub fn keep_on_active_space(win: &WebviewWindow) {
+        let app = win.app_handle().clone();
+        let label = win.label().to_string();
+        let _ = win.run_on_main_thread(move || {
+            let Ok(panel) = app.get_webview_panel(&label) else { return };
+            let ns = panel.as_panel();
+            if !ns.isVisible() || ns.isOnActiveSpace() {
+                return;
+            }
+            // At most every 2 s: if macOS won't move it, retrying each check would make it flicker.
+            static LAST_TRY: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+            let mut last = LAST_TRY.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+            ns.setCollectionBehavior(follow_behavior());
+            ns.orderOut(None);
+            ns.orderFrontRegardless();
+            // Whether it arrived is only known later; the next check (every follow tick) sees it.
+            mlog!("widget: wasn't on the Space in front; moving it there");
+        });
+    }
+
+    /// Moves to whichever Space is in front each time it's ordered in, full-screen ones included.
+    fn follow_behavior() -> objc2_app_kit::NSWindowCollectionBehavior {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        B::MoveToActiveSpace | B::FullScreenAuxiliary | B::IgnoresCycle
     }
 }
 
@@ -730,6 +772,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::assistant_history_delete,
         commands::assistant_history_clear,
         commands::download_brain,
+        commands::download_voice,
         commands::preview_voice,
         commands::stop_speaking,
         commands::ask_text,
@@ -935,6 +978,7 @@ pub fn run() {
                     if !a.brain.uses_ollama() {
                         a.brain.local.stop_if_idle(s.cfg().keep_alive_minutes());
                     }
+                    a.speaker.unload_if_idle(s.cfg().keep_alive_minutes());
                 });
                 app.manage(murmur.assistant.clone());
             }
@@ -980,6 +1024,12 @@ pub fn cli_focus_test() {
     let target = focus::detect();
     mlog!("focus-test → {target:?}");
     println!("{target:?}");
+}
+
+/// Headless check of the voice: `murmur --say "It's raining."`.
+#[cfg(target_os = "macos")]
+pub fn cli_say(text: &str) {
+    assistant::cli_say(text)
 }
 
 /// Headless check of the brain, actions and voice: `murmur --ask "what's the weather in Pune?"`.

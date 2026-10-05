@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, XAxis } from "recharts";
-import { ArrowRight, ArrowUp, Download, Gauge, MessageSquarePlus, ShieldAlert, Sparkles, Square } from "lucide-react";
+import { ArrowRight, ArrowUp, Download, Gauge, Loader2, MessageSquarePlus, ShieldAlert, Sparkles, Square } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { api, events, formatSeconds, keyLabel, type Reply } from "@/lib/api";
 import { setView } from "@/lib/view";
 import { medianResponseMs, questionsPerDay, streak } from "@/assistant/metrics";
 import type { useAppState } from "@/hooks/use-app";
+import { useBusy } from "@/hooks/use-busy";
 import { useExchanges } from "@/assistant/use-exchanges";
 import { cn } from "@/lib/utils";
 import type { Tab } from "@/App";
@@ -33,6 +34,7 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
   const usesOllama = s?.config.brain === "ollama";
   const modelMissing = usesOllama && a?.ollama.running && !a.ollama.models.includes(s!.config.llm_model);
   const brainProgress = s?.downloads.brain;
+  const { busy: acting, run } = useBusy();
 
   const week = useMemo(() => questionsPerDay(entries ?? [], 7), [entries]);
   const days = useMemo(() => streak(entries ?? []), [entries]);
@@ -125,7 +127,17 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
             {a.brain_label}, about {(a.brain_size_mb / 1000).toFixed(1)} GB, once. It runs on this Mac; after that {name} works offline.
           </AlertDescription>
           <AlertAction>
-            <Button size="sm" disabled={brainProgress != null} onClick={() => api.downloadBrain().then(app.refresh)}>
+            <Button
+              size="sm"
+              disabled={brainProgress != null || acting !== null}
+              onClick={() =>
+                run("download", async () => {
+                  await api.downloadBrain();
+                  await app.refresh();
+                }, "Couldn't start the download: ")
+              }
+            >
+              {(brainProgress != null || acting === "download") && <Loader2 className="animate-spin" />}
               {brainProgress != null ? `${Math.round(brainProgress * 100)}%` : "Download"}
             </Button>
           </AlertAction>
@@ -211,13 +223,16 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
             variant="ghost"
             size="sm"
             className="-mr-2 text-muted-foreground"
-            onClick={async () => {
-              await api.newConversation();
-              setLive(null);
-              toast("New conversation — earlier questions are forgotten");
-            }}
+            disabled={acting !== null}
+            onClick={() =>
+              run("new", async () => {
+                await api.newConversation();
+                setLive(null);
+                toast("New conversation — earlier questions are forgotten");
+              }, "Couldn't start a new conversation: ")
+            }
           >
-            <MessageSquarePlus /> New conversation
+            {acting === "new" ? <Loader2 className="animate-spin" /> : <MessageSquarePlus />} New conversation
           </Button>
         }
       >
