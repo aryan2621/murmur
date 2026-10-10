@@ -8,7 +8,7 @@
 
 ## Install
 
-1. Download [`Murmur_0.1.0_aarch64.dmg`](https://github.com/aryan2621/desktop-apps/releases/latest/download/Murmur_0.1.0_aarch64.dmg)
+1. Download [`Murmur_0.1.0_aarch64.dmg`](https://github.com/aryan2621/murmur/releases/latest/download/Murmur_0.1.0_aarch64.dmg)
    (macOS 11 or later; Apple silicon recommended).
 2. Open it and drag **Murmur** into **Applications**, then open Murmur. A mic icon appears in the menu bar.
 
@@ -175,6 +175,6 @@ History is kept in `history.jsonl` (dictations) and `assistant-history.jsonl` (q
 ## Windows
 
 A Windows version (dictation only) is in beta: `Murmur_0.1.0_x64-setup.exe` on the
-[releases page](https://github.com/aryan2621/desktop-apps/releases/latest). If Windows shows
+[releases page](https://github.com/aryan2621/murmur/releases/latest). If Windows shows
 "Windows protected your PC", click **More info → Run anyway**. Dictation keys on Windows:
 `right_ctrl`, `right_alt` or `caps_lock`.

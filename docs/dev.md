@@ -7,6 +7,7 @@
 Needs Node 22, pnpm, Rust (stable) and `cmake` (for llama.cpp's server).
 
 ```bash
+git clone https://github.com/aryan2621/murmur.git
 cd murmur
 pnpm install
 pnpm tauri build --bundles app

@@ -12,8 +12,8 @@ Everything runs on your Mac (Whisper for speech, a built-in Qwen3 AI, the macOS 
 optional natural AI voice that also speaks Hindi). Your voice and conversations never leave it; with web access on, only search words and page
 addresses go online.
 
-**[⬇ Download for macOS](https://github.com/aryan2621/desktop-apps/releases/latest/download/Murmur_0.1.0_aarch64.dmg)**
-· macOS 11+, Apple silicon recommended · [Windows beta and all downloads](https://github.com/aryan2621/desktop-apps/releases/latest)
+**[⬇ Download for macOS](https://github.com/aryan2621/murmur/releases/latest/download/Murmur_0.1.0_aarch64.dmg)**
+· macOS 11+, Apple silicon recommended · [Windows beta and all downloads](https://github.com/aryan2621/murmur/releases/latest)
 
 📖 **[User guide](docs/user.md)** — every feature, setting and fix
 🛠 **[Developer guide](docs/dev.md)** — build from source, code layout, how the assistant works
@@ -47,6 +47,7 @@ Try: *"What's the weather tomorrow?"*, *"Play the Kesariya song"*, *"What's on m
 ## Build from source
 
 ```bash
+git clone https://github.com/aryan2621/murmur.git
 cd murmur && pnpm install && pnpm tauri build --bundles app
 ```
 
