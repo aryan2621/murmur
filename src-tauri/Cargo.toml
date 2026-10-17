@@ -19,6 +19,8 @@ anyhow = "1"
 cpal = "0.18"
 arboard = "3"
 hound = "3"
+# RNNoise (pure Rust): removes noise that isn't speech from the mic audio.
+nnnoiseless = { version = "0.5", default-features = false }
 regex = "1"
 chrono = "0.4"
 dirs = "6"
@@ -29,7 +31,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 whisper-rs = { version = "0.16", features = ["metal"] }
 core-foundation = "0.10"
 tauri-nspanel = "2.1"
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["exception"] }
+# Echo cancellation: the mic through AVAudioEngine with macOS voice processing.
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioEngine", "AVAudioIONode", "AVAudioNode", "AVAudioBuffer", "AVAudioFormat", "AVAudioSinkNode", "AVAudioTypes", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString", "NSDate", "NSError", "NSURL", "NSDictionary"] }

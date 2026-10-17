@@ -275,6 +275,12 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             </Row>
           </Section>
           <Section title="Microphone">
+            <Row id="noise" title="Noise suppression" description="Keeps only voices: removes fans, hum, keyboard noise and clicks. Applies to dictation and the assistant.">
+              <Switch id="noise" checked={c.noise_suppression} onCheckedChange={(v) => save({ noise_suppression: v })} />
+            </Row>
+            <Row id="echo" title="Echo cancellation" description="Ignores what your Mac is playing: the assistant's voice, music and videos. macOS, with the system default microphone. Other apps get slightly quieter while the mic is on.">
+              <Switch id="echo" checked={c.echo_cancellation} onCheckedChange={(v) => save({ echo_cancellation: v })} />
+            </Row>
             <Row id="mic" title="Input device" description="Built-in mics often sound better than Bluetooth headsets.">
               <div className="flex items-center gap-1">
                 <Select value={c.input_device ?? SYSTEM_DEFAULT} onValueChange={(v) => save({ input_device: v === SYSTEM_DEFAULT ? null : v })}>

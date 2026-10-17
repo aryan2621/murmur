@@ -20,6 +20,8 @@ export interface Config {
   vocabulary: string[];
   replacements: Replacement[];
   remove_fillers: boolean;
+  noise_suppression: boolean;
+  echo_cancellation: boolean;
   restore_clipboard: boolean;
   save_history: boolean;
   sounds: boolean;

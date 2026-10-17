@@ -9,7 +9,7 @@ pub mod kokoro;
 pub mod llm;
 mod player;
 pub mod speech;
-mod voice;
+pub(crate) mod voice;
 
 use crate::hotkey::HotkeyEvent;
 use crate::{cleanup, config, gesture, key_label, model, play_sound, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
@@ -588,7 +588,7 @@ impl Assistant {
         let cfg = self.cfg();
         self.shared.preload_transcriber();
         self.ducker.duck();
-        self.shared.recorder.start_async(cfg.input_device, on_level)
+        self.shared.recorder.start_async(cfg.input_device.clone(), cfg.mic_processing(), on_level)
     }
 
     /// The mic has opened, or couldn't. True when recording.
@@ -835,9 +835,13 @@ impl Assistant {
     /// Recording → question → streamed answer, spoken sentence by sentence.
     /// Returns how long to keep the answer on screen afterwards.
     fn respond(&self, turn: u64) -> anyhow::Result<Duration> {
-        let rec = self.stop_mic()?;
+        let mut rec = self.stop_mic()?;
         if rec.seconds() < MIN_SECONDS || rec.peak_rms < SILENCE_RMS {
             mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
+            return Ok(Duration::ZERO);
+        }
+        if self.cfg().noise_suppression && !voice::keep_speech(&mut rec.samples) {
+            mlog!("skipped clip ({:.2}s): no speech in it", rec.seconds());
             return Ok(Duration::ZERO);
         }
         self.emit("transcribing", None, None);
@@ -1222,7 +1226,7 @@ impl Assistant {
             }
         });
         self.ducker.duck_now();
-        let listening = self.shared.recorder.start(cfg.input_device.clone(), on_level).is_ok();
+        let listening = self.shared.recorder.start(cfg.input_device.clone(), cfg.mic_processing(), on_level).is_ok();
         if !listening {
             self.ducker.restore();
         }

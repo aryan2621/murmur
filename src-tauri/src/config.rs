@@ -74,6 +74,12 @@ pub struct Config {
     pub pause_seconds: f32,
     /// Conversation mode ends after this long without hearing you.
     pub conversation_timeout_seconds: u32,
+    /// Remove everything but voices from the mic audio (fans, hum, keyboards, clicks), like the
+    /// noise cancellation in video calls.
+    pub noise_suppression: bool,
+    /// Remove what the Mac itself is playing (the assistant's voice, music, videos) from the mic
+    /// audio. macOS only, with the system default microphone.
+    pub echo_cancellation: bool,
     /// Mic level (RMS) that counts as speech. Raise it in a noisy room, lower it for a quiet voice.
     pub speech_threshold: f32,
     /// Let the assistant act on the Mac: open apps and websites, set timers and reminders,
@@ -127,6 +133,8 @@ impl Default for Config {
             history_turns: 8,
             pause_seconds: 1.2,
             conversation_timeout_seconds: 20,
+            noise_suppression: true,
+            echo_cancellation: true,
             speech_threshold: 0.012,
             actions: true,
             web_access: true,
@@ -136,6 +144,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// How dictation and the assistant clean up the mic audio.
+    pub fn mic_processing(&self) -> crate::audio::Processing {
+        crate::audio::Processing { denoise: self.noise_suppression, echo: self.echo_cancellation }
+    }
+
     /// `keep_alive` in minutes; 0 means keep the model loaded.
     pub fn keep_alive_minutes(&self) -> u64 {
         let v = self.keep_alive.trim();

@@ -2,7 +2,7 @@
 //! MacBook's mic are often louder than your voice, and kept conversation mode listening long
 //! after you stopped. Silero VAD (run by whisper.cpp, shipped inside the app) can.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use whisper_rs::{WhisperVadContext, WhisperVadContextParams};
 
@@ -47,6 +47,29 @@ impl VoiceDetector {
                 .collect(),
         )
     }
+}
+
+/// Windows kept on each side of speech, so word starts and ends aren't clipped (160 ms).
+const GATE_PAD: usize = 5;
+
+/// Silences everything in a finished clip (16 kHz) that isn't speech, so Whisper only gets
+/// voices. Returns false if there is no speech at all. Leaves the clip alone if the detector
+/// isn't available.
+pub fn keep_speech(samples: &mut [f32]) -> bool {
+    static DETECTOR: OnceLock<VoiceDetector> = OnceLock::new();
+    let Some(windows) = DETECTOR.get_or_init(VoiceDetector::new).windows(samples) else { return true };
+    let speech: Vec<bool> = windows.iter().map(|(s, _)| *s).collect();
+    if !speech.iter().any(|s| *s) {
+        return false;
+    }
+    for (i, chunk) in samples.chunks_mut(WINDOW).enumerate() {
+        // The detector may judge fewer windows than the clip has (a short last one); past its end is not speech.
+        let near = speech.get(i.saturating_sub(GATE_PAD)..(i + GATE_PAD + 1).min(speech.len())).unwrap_or(&[]);
+        if !near.iter().any(|s| *s) {
+            chunk.fill(0.0);
+        }
+    }
+    true
 }
 
 fn load() -> Option<WhisperVadContext> {

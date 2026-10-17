@@ -182,7 +182,7 @@ impl Dictation {
             let _ = app.emit_to("widget", "level", level);
         });
         let cfg = self.shared.cfg();
-        let opened = self.shared.recorder.start_async(cfg.input_device, on_level);
+        let opened = self.shared.recorder.start_async(cfg.input_device.clone(), cfg.mic_processing(), on_level);
         let core = self.clone();
         std::thread::spawn(move || match opened.recv().unwrap_or_else(|e| Err(anyhow::anyhow!("{e}"))) {
             Ok(()) => core.recording_started(),
@@ -245,9 +245,13 @@ impl Dictation {
     /// Records → text → inserted where it makes sense. Returns how long to keep the widget up.
     fn process(&self) -> anyhow::Result<Duration> {
         let quick = Duration::from_millis(350);
-        let rec = self.shared.recorder.stop()?;
+        let mut rec = self.shared.recorder.stop()?;
         if rec.seconds() < MIN_SECONDS || rec.peak_rms < SILENCE_RMS {
             mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
+            return Ok(Duration::ZERO);
+        }
+        if self.shared.cfg().noise_suppression && !crate::assistant::voice::keep_speech(&mut rec.samples) {
+            mlog!("skipped clip ({:.2}s): no speech in it", rec.seconds());
             return Ok(Duration::ZERO);
         }
         self.emit("transcribing", None, None);
