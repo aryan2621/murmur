@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use whisper_rs::{WhisperVadContext, WhisperVadContextParams};
 
-const MODEL: &[u8] = include_bytes!("../../assets/ggml-silero-v5.1.2.bin");
+const MODEL: &[u8] = include_bytes!("../assets/ggml-silero-v5.1.2.bin");
 /// Silero judges 32 ms of 16 kHz audio at a time.
 pub const WINDOW: usize = 512;
 pub const WINDOW_TIME: Duration = Duration::from_millis(32);

@@ -9,7 +9,6 @@ pub mod kokoro;
 pub mod llm;
 mod player;
 pub mod speech;
-pub(crate) mod voice;
 
 use crate::hotkey::HotkeyEvent;
 use crate::{cleanup, config, gesture, key_label, model, play_sound, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
@@ -19,7 +18,7 @@ use config::Config;
 use llm::{Message, SentenceSplitter};
 use serde::Serialize;
 use speech::Speaker;
-use voice::VoiceDetector;
+use crate::voice::{self, VoiceDetector};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

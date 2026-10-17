@@ -250,7 +250,7 @@ impl Dictation {
             mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
             return Ok(Duration::ZERO);
         }
-        if self.shared.cfg().noise_suppression && !crate::assistant::voice::keep_speech(&mut rec.samples) {
+        if self.shared.cfg().noise_suppression && !crate::voice::keep_speech(&mut rec.samples) {
             mlog!("skipped clip ({:.2}s): no speech in it", rec.seconds());
             return Ok(Duration::ZERO);
         }

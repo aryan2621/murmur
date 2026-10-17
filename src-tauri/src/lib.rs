@@ -19,6 +19,8 @@ mod hotkey;
 mod model;
 mod paste;
 mod transcribe;
+// Speech detection: dictation (every platform) and the assistant (macOS) both use it.
+mod voice;
 mod widget_drag;
 
 #[cfg(target_os = "macos")]
