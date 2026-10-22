@@ -7,6 +7,21 @@ export interface Replacement {
   to: string;
 }
 
+export interface Snippet {
+  trigger: string;
+  text: string;
+  /** `suffix` (default) or `anywhere` */
+  mode: string;
+}
+
+export type DictationStyle = "clean" | "verbatim" | "message" | "email" | "code";
+
+export interface Learning {
+  kind: "replacement" | "vocabulary" | string;
+  from: string;
+  to: string;
+}
+
 export interface Config {
   /** Dictation key. */
   hotkey: string;
@@ -19,6 +34,11 @@ export interface Config {
   input_device: string | null;
   vocabulary: string[];
   replacements: Replacement[];
+  snippets: Snippet[];
+  dictation_style: DictationStyle;
+  live_partials: boolean;
+  partial_interval_ms: number;
+  learn_from_corrections: boolean;
   remove_fillers: boolean;
   noise_suppression: boolean;
   echo_cancellation: boolean;
@@ -170,6 +190,9 @@ export const api = {
   /** `page` counts from 0. */
   historyPage: (query: string, page: number, pageSize: number) => invoke<HistoryPage<Entry>>("history_page", { query, page, pageSize }),
   deleteEntry: (time: string) => invoke<void>("history_delete", { time }),
+  updateEntry: (time: string, text: string) => invoke<Entry>("history_update", { time, text }),
+  suggestLearnings: (time: string, newText: string) => invoke<Learning[]>("history_suggest_learnings", { time, newText }),
+  applyLearnings: (learnings: Learning[]) => invoke<void>("apply_learnings", { learnings }),
   clearHistory: () => invoke<void>("history_clear"),
   stats: () => invoke<Stats>("get_stats"),
   copy: (text: string) => invoke<void>("copy_text", { text }),

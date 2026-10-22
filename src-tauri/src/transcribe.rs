@@ -18,23 +18,56 @@ impl Transcriber {
     /// `audio` must be mono 16 kHz. `vocabulary` biases spelling of names/jargon.
     /// With `translate`, any spoken language is output as English.
     pub fn transcribe(&self, audio: &[f32], language: &str, translate: bool, vocabulary: &[String]) -> Result<String> {
+        self.decode(audio, language, translate, vocabulary, None)
+    }
+
+    /// Live overlay while recording; may reuse the previous partial as prompt.
+    pub fn transcribe_partial(
+        &self,
+        audio: &[f32],
+        language: &str,
+        translate: bool,
+        vocabulary: &[String],
+        previous_hint: Option<&str>,
+    ) -> Result<String> {
+        self.decode(audio, language, translate, vocabulary, previous_hint)
+    }
+
+    fn decode(
+        &self,
+        audio: &[f32],
+        language: &str,
+        translate: bool,
+        vocabulary: &[String],
+        previous_hint: Option<&str>,
+    ) -> Result<String> {
         let mut state = self.ctx.create_state()?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language));
         params.set_translate(translate);
         params.set_n_threads(threads());
-        params.set_no_context(true);
+        params.set_no_context(previous_hint.is_none());
         params.set_no_timestamps(true);
         params.set_suppress_blank(true);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        let prompt = if vocabulary.is_empty() {
-            String::new()
-        } else {
-            format!("Vocabulary: {}.", vocabulary.join(", "))
-        };
+        let mut prompt = String::new();
+        if let Some(h) = previous_hint {
+            let h = h.trim();
+            if !h.is_empty() {
+                prompt.push_str(h);
+            }
+        }
+        if !vocabulary.is_empty() {
+            if !prompt.is_empty() {
+                prompt.push(' ');
+            }
+            prompt.push_str("Vocabulary: ");
+            prompt.push_str(&vocabulary.join(", "));
+            prompt.push('.');
+        }
         if !prompt.is_empty() {
             params.set_initial_prompt(&prompt);
         }

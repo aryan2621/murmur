@@ -30,16 +30,46 @@ const HALLUCINATIONS: &[&str] = &[
 ];
 
 pub fn clean(raw: &str, remove_fillers: bool) -> String {
-    tidy(raw, remove_fillers, true)
+    clean_for_style(raw, "clean", remove_fillers)
+}
+
+/// Tidies raw Whisper output for dictation, according to the user's style.
+pub fn clean_for_style(raw: &str, style: &str, remove_fillers: bool) -> String {
+    match style {
+        "verbatim" => {
+            let s = MULTI_SPACE.replace_all(raw.trim(), " ").into_owned();
+            s.trim().to_string()
+        }
+        "message" => {
+            let mut s = tidy(raw, remove_fillers, true, true);
+            s = s.replace('\n', " ");
+            s = MULTI_SPACE.replace_all(&s, " ").into_owned();
+            let s = s.trim();
+            if s.is_empty() {
+                return String::new();
+            }
+            if !s.ends_with(['.', '!', '?']) {
+                format!("{s}.")
+            } else {
+                s.to_string()
+            }
+        }
+        "email" => {
+            let s = tidy(raw, remove_fillers, true, true);
+            capitalize_sentences(&s)
+        }
+        "code" => tidy(raw, false, true, false).trim().to_string(),
+        _ => tidy(raw, remove_fillers, true, true),
+    }
 }
 
 /// A spoken question for the assistant. Only an explicit am/pm suffix identifies a time there:
 /// "at 10.30" can be a price.
 pub fn clean_question(raw: &str) -> String {
-    tidy(raw, true, false)
+    tidy(raw, true, false, true)
 }
 
-fn tidy(raw: &str, remove_fillers: bool, times_after_words: bool) -> String {
+fn tidy(raw: &str, remove_fillers: bool, times_after_words: bool, capitalize: bool) -> String {
     let mut s = TAGS.replace_all(raw, " ").into_owned();
     if remove_fillers {
         s = FILLERS.replace_all(&s, "").into_owned();
@@ -57,7 +87,7 @@ fn tidy(raw: &str, remove_fillers: bool, times_after_words: bool) -> String {
     s = DOUBLE_COMMA.replace_all(&s, "$1").into_owned();
     s = MULTI_SPACE.replace_all(&s, " ").into_owned();
     let s = s.trim().trim_start_matches([',', '.', ';', ':']).trim();
-    capitalize_first(s)
+    if capitalize { capitalize_first(s) } else { s.to_string() }
 }
 
 /// Applies the user's fix-ups, e.g. a name Whisper keeps mishearing.
@@ -105,5 +135,47 @@ fn capitalize_first(s: &str) -> String {
     match chars.next() {
         Some(c) => c.to_uppercase().chain(chars).collect(),
         None => String::new(),
+    }
+}
+
+fn capitalize_sentences(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cap_next = true;
+    for c in s.chars() {
+        if cap_next && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            cap_next = false;
+        } else {
+            out.push(c);
+            if ".!?".contains(c) {
+                cap_next = true;
+            }
+        }
+    }
+    let t = out.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    if !t.ends_with(['.', '!', '?']) {
+        format!("{t}.")
+    } else {
+        t.to_string()
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_keeps_fillers() {
+        let s = clean_for_style("um hello there", "verbatim", true);
+        assert!(s.contains("um"));
+    }
+
+    #[test]
+    fn message_one_paragraph() {
+        let s = clean_for_style("hello\nworld", "message", false);
+        assert_eq!(s, "Hello world.");
     }
 }

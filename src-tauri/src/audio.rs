@@ -43,6 +43,8 @@ enum Cmd {
     Start(Option<String>, Processing, LevelFn, mpsc::Sender<Result<()>>),
     Stop(mpsc::Sender<Result<Recording>>),
     Peek(Duration, mpsc::Sender<Option<Tail>>),
+    /// Full buffer so far (mono 16 kHz), while still recording.
+    Snapshot(mpsc::Sender<Option<Tail>>),
 }
 
 /// The newest audio of a recording that is still running.
@@ -152,6 +154,13 @@ impl Recorder {
         wait.recv().ok()?
     }
 
+    /// All audio captured so far during an active recording.
+    pub fn snapshot(&self) -> Option<Tail> {
+        let (reply, wait) = mpsc::channel();
+        self.tx.send(Cmd::Snapshot(reply)).ok()?;
+        wait.recv().ok()?
+    }
+
     pub fn stop(&self) -> Result<Recording> {
         let (reply, wait) = mpsc::channel();
         self.tx.send(Cmd::Stop(reply))?;
@@ -191,6 +200,16 @@ fn audio_thread(rx: mpsc::Receiver<Cmd>) {
                         let b = buf.lock().unwrap();
                         let want = (span.as_secs_f64() * *rate as f64) as usize;
                         (b.samples[b.samples.len().saturating_sub(want)..].to_vec(), b.samples.len())
+                    };
+                    Tail { samples: resample(&raw, *rate, TARGET_RATE), total: (len as u64 * TARGET_RATE as u64 / *rate as u64) as usize }
+                });
+                let _ = reply.send(tail);
+            }
+            Cmd::Snapshot(reply) => {
+                let tail = active.as_ref().map(|(_, buf, rate)| {
+                    let (raw, len) = {
+                        let b = buf.lock().unwrap();
+                        (b.samples.clone(), b.samples.len())
                     };
                     Tail { samples: resample(&raw, *rate, TARGET_RATE), total: (len as u64 * TARGET_RATE as u64 / *rate as u64) as usize }
                 });

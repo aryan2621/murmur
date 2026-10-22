@@ -16,6 +16,8 @@ mod focus;
 mod gesture;
 mod history;
 mod hotkey;
+mod learn;
+mod snippets;
 mod model;
 mod paste;
 mod transcribe;
@@ -58,6 +60,8 @@ pub struct Shared {
     cfg: RwLock<Config>,
     recorder: Recorder,
     transcriber: Mutex<Option<Arc<Transcriber>>>,
+    /// Only one Whisper decode at a time (final + live partials).
+    transcribe_lock: Mutex<()>,
     /// Serialises model loads so a press during an idle reload doesn't load it twice.
     load_lock: Mutex<()>,
     /// The speech model is being downloaded or loaded (or waits for setup to download it).
@@ -110,6 +114,33 @@ impl Shared {
     }
 
     /// The loaded model, loading it first if it was unloaded to save memory.
+    /// Runs Whisper under `transcribe_lock` so partial and final decodes never overlap.
+    pub fn transcribe(
+        &self,
+        audio: &[f32],
+        language: &str,
+        translate: bool,
+        vocabulary: &[String],
+    ) -> anyhow::Result<String> {
+        let t = self.ensure_transcriber()?;
+        let _g = self.transcribe_lock.lock().unwrap();
+        t.transcribe(audio, language, translate, vocabulary).map_err(Into::into)
+    }
+
+    pub fn transcribe_partial(
+        &self,
+        audio: &[f32],
+        language: &str,
+        translate: bool,
+        vocabulary: &[String],
+        previous_hint: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let t = self.ensure_transcriber()?;
+        let _g = self.transcribe_lock.lock().unwrap();
+        t.transcribe_partial(audio, language, translate, vocabulary, previous_hint)
+            .map_err(Into::into)
+    }
+
     fn ensure_transcriber(&self) -> anyhow::Result<Arc<Transcriber>> {
         if let Some(t) = self.transcriber.lock().unwrap().clone() {
             return Ok(t);
@@ -759,6 +790,9 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::history_page,
         commands::history_delete,
         commands::history_clear,
+        commands::history_update,
+        commands::history_suggest_learnings,
+        commands::apply_learnings,
         commands::get_stats,
         commands::copy_text,
         commands::set_login,
@@ -796,6 +830,9 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::history_page,
         commands::history_delete,
         commands::history_clear,
+        commands::history_update,
+        commands::history_suggest_learnings,
+        commands::apply_learnings,
         commands::get_stats,
         commands::copy_text,
         commands::set_login,
@@ -907,6 +944,7 @@ pub fn run() {
                 cfg: RwLock::new(cfg),
                 recorder: Recorder::new(),
                 transcriber: Mutex::new(None),
+                transcribe_lock: Mutex::new(()),
                 load_lock: Mutex::new(()),
                 loading: AtomicBool::new(true),
                 last_used: Mutex::new(Instant::now()),

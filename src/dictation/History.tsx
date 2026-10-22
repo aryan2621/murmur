@@ -102,7 +102,7 @@ export default function DictationHistory() {
               <h2 className="font-display text-[26px] leading-none">{g.label}</h2>
             </div>
             <Panel className="overflow-hidden">
-              {g.items.map((e) => <EntryRow key={e.time} entry={e} onDeleted={refresh} />)}
+              {g.items.map((e) => <EntryRow key={e.time} entry={e} onDeleted={refresh} onUpdated={refresh} />)}
             </Panel>
           </section>
         ))

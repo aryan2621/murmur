@@ -3,8 +3,10 @@
 
 use crate::gesture::{self, ReleaseAction};
 use crate::hotkey::HotkeyEvent;
-use crate::{cleanup, focus, history, paste, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
+use crate::{cleanup, focus, history, paste, snippets, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
+use crate::audio::TARGET_RATE;
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -36,12 +38,19 @@ struct Gesture {
     ignore_release: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct PartialTranscript {
+    text: String,
+}
+
 pub struct Dictation {
     app: AppHandle,
     shared: Arc<Shared>,
     phase: Mutex<Phase>,
     gesture: Mutex<Gesture>,
     pub last_text: Mutex<Option<String>>,
+    /// Bumped when a recording starts; partial workers exit when this changes.
+    recording_id: AtomicU64,
 }
 
 impl Dictation {
@@ -52,6 +61,7 @@ impl Dictation {
             phase: Mutex::new(Phase::Idle),
             gesture: Mutex::new(Gesture::default()),
             last_text: Mutex::new(None),
+            recording_id: AtomicU64::new(0),
         }
     }
 
@@ -199,7 +209,9 @@ impl Dictation {
             return;
         }
         self.emit("recording", None, None);
+        let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text: String::new() });
         self.shared.preload_transcriber();
+        self.spawn_partial_worker();
         // Show only if this turns out to be a hold, so quick taps never flash the widget.
         let core = self.clone();
         let pressed_at = self.gesture.lock().unwrap().pressed_at;
@@ -214,6 +226,50 @@ impl Dictation {
                 core.shared.play("Tink");
             }
         });
+    }
+
+    fn spawn_partial_worker(self: &Arc<Self>) {
+        let id = self.recording_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let core = self.clone();
+        std::thread::spawn(move || core.partial_loop(id));
+    }
+
+    fn partial_loop(self: &Arc<Self>, id: u64) {
+        let min_samples = TARGET_RATE as usize * 6 / 5;
+        let mut last_hint = String::new();
+        loop {
+            let cfg = self.shared.cfg();
+            if !cfg.live_partials {
+                std::thread::sleep(Duration::from_millis(cfg.partial_interval_ms.max(400) as u64));
+                if self.recording_id.load(Ordering::SeqCst) != id || self.phase() != Phase::Recording {
+                    break;
+                }
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(cfg.partial_interval_ms.max(400) as u64));
+            if self.recording_id.load(Ordering::SeqCst) != id || self.phase() != Phase::Recording {
+                break;
+            }
+            let Some(tail) = self.shared.recorder.snapshot() else { break };
+            if tail.samples.len() < min_samples {
+                continue;
+            }
+            let lang = cfg.language.as_str();
+            let hint = if last_hint.is_empty() { None } else { Some(last_hint.as_str()) };
+            let Ok(raw) = self.shared.transcribe_partial(&tail.samples, lang, cfg.translate, &cfg.vocabulary, hint)
+            else {
+                continue;
+            };
+            if raw.is_empty() || cleanup::is_hallucination(&raw) {
+                continue;
+            }
+            let text = cleanup::clean_for_style(&raw, &cfg.dictation_style, cfg.remove_fillers);
+            if text.is_empty() {
+                continue;
+            }
+            last_hint = raw;
+            let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text });
+        }
     }
 
     pub fn cancel_recording(self: &Arc<Self>) {
@@ -255,16 +311,20 @@ impl Dictation {
             return Ok(Duration::ZERO);
         }
         self.emit("transcribing", None, None);
-        let transcriber = self.shared.ensure_transcriber()?;
+        let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text: String::new() });
         let started = Instant::now();
         let cfg = self.shared.cfg();
-        let raw = transcriber.transcribe(&rec.samples, &cfg.language, cfg.translate, &cfg.vocabulary)?;
+        let raw = self.shared.transcribe(&rec.samples, &cfg.language, cfg.translate, &cfg.vocabulary)?;
         let elapsed = started.elapsed().as_millis();
         mlog!("transcribed {:.1}s audio in {elapsed} ms", rec.seconds());
         if cleanup::is_hallucination(&raw) {
             return Ok(Duration::ZERO);
         }
-        let text = cleanup::apply_replacements(&cleanup::clean(&raw, cfg.remove_fillers), &cfg.replacements);
+        let mut text = cleanup::apply_replacements(
+            &cleanup::clean_for_style(&raw, &cfg.dictation_style, cfg.remove_fillers),
+            &cfg.replacements,
+        );
+        text = snippets::apply_snippets(&text, &cfg.snippets);
         if text.is_empty() {
             return Ok(Duration::ZERO);
         }

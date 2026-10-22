@@ -24,6 +24,16 @@ pub struct Config {
     pub vocabulary: Vec<String>,
     /// Fix-ups applied after transcription: whole-word, case-insensitive `from` → `to`.
     pub replacements: Vec<Replacement>,
+    /// Expand triggers like `;;sig` into longer text after transcription.
+    pub snippets: Vec<Snippet>,
+    /// How dictation is tidied before paste: `clean`, `verbatim`, `message`, `email`, `code`.
+    pub dictation_style: String,
+    /// Show live Whisper text in the widget while recording (uses extra CPU).
+    pub live_partials: bool,
+    /// How often to refresh live partials while recording, in milliseconds.
+    pub partial_interval_ms: u32,
+    /// Offer to save word fixes from History edits into replacements / vocabulary.
+    pub learn_from_corrections: bool,
     /// Strip "um", "uh", stutters and similar.
     pub remove_fillers: bool,
     /// Put back whatever was on the clipboard after pasting.
@@ -99,6 +109,19 @@ pub struct Replacement {
     pub to: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Snippet {
+    pub trigger: String,
+    pub text: String,
+    /// `suffix` (default): expand when the trigger is at the end; `anywhere`: whole-word swap.
+    #[serde(default = "default_snippet_mode")]
+    pub mode: String,
+}
+
+fn default_snippet_mode() -> String {
+    "suffix".into()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -109,6 +132,11 @@ impl Default for Config {
             input_device: None,
             vocabulary: vec![],
             replacements: vec![],
+            snippets: vec![],
+            dictation_style: "clean".into(),
+            live_partials: true,
+            partial_interval_ms: 900,
+            learn_from_corrections: true,
             remove_fillers: true,
             restore_clipboard: true,
             save_history: true,

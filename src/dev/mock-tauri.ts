@@ -63,7 +63,10 @@ const exchanges = makeExchanges();
 let notes = "Ideas for the offsite:\n- team dinner on Thursday\n- one hour for demos";
 let config: Config = {
   hotkey: "fn", model: "large-v3-turbo-q5_0", language: "en", translate: false, input_device: null, noise_suppression: true, echo_cancellation: true,
-  vocabulary: ["Acme Corp", "Kubernetes"], replacements: [{ from: "acme corp", to: "Acme Corp" }], remove_fillers: true,
+  vocabulary: ["Acme Corp", "Kubernetes"], replacements: [{ from: "acme corp", to: "Acme Corp" }],
+  snippets: [{ trigger: ";;sig", text: "Best,\nDemo User", mode: "suffix" }],
+  dictation_style: "clean", live_partials: true, partial_interval_ms: 900, learn_from_corrections: true,
+  remove_fillers: true,
   restore_clipboard: true, save_history: true, sounds: true, unload_after_minutes: 0,
   // `?setup` in the URL previews the first-run setup (`?setup=2` opens a step).
   setup_done: !new URLSearchParams(location.search).has("setup"),

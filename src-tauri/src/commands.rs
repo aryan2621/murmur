@@ -260,6 +260,49 @@ pub fn history_clear() -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+pub fn history_update(time: String, text: String) -> Result<history::Entry, String> {
+    history::update_text(&time, &text)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Dictation not found".to_string())
+}
+
+#[tauri::command(async)]
+pub fn history_suggest_learnings(time: String, new_text: String) -> Vec<crate::learn::Learning> {
+    let Some(entry) = history::entry_by_time(&time) else {
+        return vec![];
+    };
+    crate::learn::suggest_learnings(&entry.text, &new_text, &entry.raw)
+}
+
+#[tauri::command(async)]
+pub fn apply_learnings(shared: State<'_, Arc<Shared>>, learnings: Vec<crate::learn::Learning>) -> Result<(), String> {
+    if learnings.is_empty() {
+        return Ok(());
+    }
+    let shared = shared.inner().clone();
+    let mut cfg = shared.cfg();
+    for l in learnings {
+        match l.kind.as_str() {
+            "replacement" if !l.from.trim().is_empty() && !l.to.trim().is_empty() => {
+                if !cfg.replacements.iter().any(|r| r.from.eq_ignore_ascii_case(&l.from)) {
+                    cfg.replacements.push(crate::config::Replacement { from: l.from, to: l.to });
+                }
+            }
+            "vocabulary" if !l.to.trim().is_empty() => {
+                let word = l.to.trim().to_string();
+                if !cfg.vocabulary.iter().any(|v| v.eq_ignore_ascii_case(&word)) {
+                    cfg.vocabulary.push(word);
+                }
+            }
+            _ => {}
+        }
+    }
+    crate::config::save(&cfg).map_err(|e| e.to_string())?;
+    *shared.cfg.write().unwrap() = cfg;
+    Ok(())
+}
+
+#[tauri::command(async)]
 pub fn get_stats() -> history::Stats {
     history::stats()
 }

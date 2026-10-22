@@ -845,9 +845,8 @@ impl Assistant {
         }
         self.emit("transcribing", None, None);
         let cfg = self.cfg();
-        let transcriber = self.shared.ensure_transcriber()?;
         let t0 = Instant::now();
-        let raw = transcriber.transcribe(&rec.samples, &cfg.language, false, &[])?;
+        let raw = self.shared.transcribe(&rec.samples, &cfg.language, false, &[])?;
         let heard_ms = t0.elapsed().as_millis();
         if cleanup::is_hallucination(&raw) {
             return Ok(Duration::ZERO);
@@ -1256,8 +1255,11 @@ impl Assistant {
             return false;
         }
         self.emit("transcribing", None, None);
-        let Ok(transcriber) = self.shared.ensure_transcriber() else { return false };
-        let said = transcriber.transcribe(&rec.samples, &cfg.language, false, &[]).map(|t| cleanup::clean_question(&t)).unwrap_or_default();
+        let said = self
+            .shared
+            .transcribe(&rec.samples, &cfg.language, false, &[])
+            .map(|t| cleanup::clean_question(&t))
+            .unwrap_or_default();
         mlog!("heard for the confirmation: {said}");
         self.current(turn) && is_yes(&said)
     }

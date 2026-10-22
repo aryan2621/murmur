@@ -88,6 +88,30 @@ pub fn delete(time: &str) -> anyhow::Result<()> {
     write_all(&entries)
 }
 
+/// Updates the final text of one entry (keeps `raw` unchanged).
+pub fn update_text(time: &str, text: &str) -> anyhow::Result<Option<Entry>> {
+    let mut found = None;
+    let entries: Vec<Entry> = load()
+        .into_iter()
+        .map(|mut e| {
+            if e.time == time {
+                e.text = text.to_string();
+                found = Some(e.clone());
+            }
+            e
+        })
+        .collect();
+    if found.is_none() {
+        return Ok(None);
+    }
+    write_all(&entries)?;
+    Ok(found)
+}
+
+pub fn entry_by_time(time: &str) -> Option<Entry> {
+    load().into_iter().find(|e| e.time == time)
+}
+
 pub fn clear() -> anyhow::Result<()> {
     write_all(&[])
 }

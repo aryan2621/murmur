@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Panel } from "@/components/bits";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { api, type Config, type Replacement, type Voice } from "@/lib/api";
+import { api, type Config, type Replacement, type Snippet, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
 import { useBusy } from "@/hooks/use-busy";
 
@@ -133,6 +133,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const { state, setState, refresh } = app;
   const [vocab, setVocab] = useState("");
   const [repl, setRepl] = useState<Replacement[]>([]);
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [location, setLocation] = useState("");
@@ -158,6 +159,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       loaded.current = true;
       setVocab(state.config.vocabulary.join("\n"));
       setRepl(state.config.replacements);
+      setSnippets(state.config.snippets ?? []);
       setName(state.config.assistant_name);
       setPrompt(state.config.system_prompt ?? "");
       setLocation(state.config.location);
@@ -202,6 +204,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   }
 
   const saveRepl = (list: Replacement[]) => save({ replacements: list.filter((r) => r.from.trim()) });
+  const saveSnippets = (list: Snippet[]) =>
+    save({ snippets: list.filter((s) => s.trigger.trim() && s.text.trim()).map((s) => ({ ...s, mode: s.mode || "suffix" })) });
 
 
   const off = (
@@ -303,6 +307,24 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     ),
     text: (
           <Section>
+            <Row id="style" title="Dictation style" description="How your words are tidied before they are typed. All styles run on your Mac.">
+              <Select value={c.dictation_style ?? "clean"} onValueChange={(v) => save({ dictation_style: v as Config["dictation_style"] })}>
+                <SelectTrigger id="style" className="w-52"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="clean">Clean (default)</SelectItem>
+                  <SelectItem value="verbatim">Verbatim</SelectItem>
+                  <SelectItem value="message">Message</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="code">Code</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+            <Row id="live-partials" title="Live preview while dictating" description="Shows words in the floating pill as you speak. Uses extra CPU with large speech models.">
+              <Switch id="live-partials" checked={c.live_partials ?? true} onCheckedChange={(v) => save({ live_partials: v })} />
+            </Row>
+            <Row id="learn" title="Learn from History edits" description="When you fix a dictation in History, offer to save replacements or vocabulary.">
+              <Switch id="learn" checked={c.learn_from_corrections ?? true} onCheckedChange={(v) => save({ learn_from_corrections: v })} />
+            </Row>
             <Row id="fillers" title="Remove filler words" description="Drops “um”, “uh”, stutters and set-off “you know”, “I mean”. Writes times as 10:30.">
               <Switch id="fillers" checked={c.remove_fillers} onCheckedChange={(v) => save({ remove_fillers: v })} />
             </Row>
@@ -350,6 +372,45 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 <div>
                   <Button variant="outline" size="sm" onClick={() => setRepl([...repl, { from: "", to: "" }])}>
                     <Plus /> Add replacement
+                  </Button>
+                </div>
+              </div>
+            </Row>
+            <Row stack title="Snippets" description="Say a trigger at the end of a dictation (e.g. ;;sig) to expand it into longer text.">
+              <div className="flex flex-col gap-2">
+                {snippets.map((s, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={s.trigger}
+                      placeholder=";;sig"
+                      className="w-28"
+                      onChange={(e) => setSnippets(snippets.map((x, j) => (j === i ? { ...x, trigger: e.target.value } : x)))}
+                      onBlur={() => saveSnippets(snippets)}
+                    />
+                    <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                    <Input
+                      value={s.text}
+                      placeholder="Expanded text…"
+                      onChange={(e) => setSnippets(snippets.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
+                      onBlur={() => saveSnippets(snippets)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Remove snippet"
+                      onClick={() => {
+                        const next = snippets.filter((_, j) => j !== i);
+                        setSnippets(next);
+                        saveSnippets(next);
+                      }}
+                    >
+                      <X />
+                    </Button>
+                  </div>
+                ))}
+                <div>
+                  <Button variant="outline" size="sm" onClick={() => setSnippets([...snippets, { trigger: "", text: "", mode: "suffix" }])}>
+                    <Plus /> Add snippet
                   </Button>
                 </div>
               </div>
