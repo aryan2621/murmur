@@ -55,9 +55,18 @@ jobs:
 
       - run: pnpm typecheck
 
+      # Tauri downloads NSIS and its plugin from GitHub at bundle time; keep them so a flaky
+      # download (seen as "timeout: global") doesn't fail the build.
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-bundler-tools-${{ runner.os }}-v1
+
+      # One retry: the compile is cached, so a second attempt only redoes the bundling.
       - name: Build app
         shell: bash
-        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+        run: pnpm tauri build --bundles ${{ matrix.bundles }} || pnpm tauri build --bundles ${{ matrix.bundles }}
 
       - uses: actions/upload-artifact@v4
         with:
