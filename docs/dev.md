@@ -33,7 +33,10 @@ charts use Recharts via shadcn's chart components. The floating widget is a stat
 
 The Rust core lives in `src-tauri/src/`: `lib.rs` holds what both modes share (settings, the mic,
 the speech model, one key tap for both keys, the widget, the menu bar), `dictation.rs` the
-dictation flow, and `assistant/` the assistant: `brain.rs` (runs the bundled llama.cpp server, or
+dictation flow (and command mode, file transcription), `stt/` the speech engines (Whisper via
+whisper-rs; Parakeet via transcribe-rs on ONNX Runtime, macOS only), `polish.rs` the local-AI
+cleanup and command-mode rewrite (macOS), `http/` + `integration/` the localhost API and `mcp/`
+the stdio MCP proxy to it (macOS), `voice.rs` the Silero speech detector, and `assistant/` the assistant: `brain.rs` (runs the bundled llama.cpp server, or
 Ollama), `llm.rs` (streaming, sentence splitting), `actions/` (the tools), `speech.rs`
 (interruptible speech queue: `say`, or the natural voice), `kokoro.rs` (the natural voice: misaki
 plus a pure-Rust eSpeak NG turn text into phonemes, Devanagari runs through eSpeak NG's Hindi

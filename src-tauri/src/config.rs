@@ -11,9 +11,15 @@ pub struct Config {
     pub hotkey: String,
     /// Hold-to-ask / tap-to-talk key for the assistant (macOS); must differ from `hotkey`.
     pub assistant_hotkey: String,
-    /// Whisper model id, e.g. "large-v3-turbo-q5_0", "small.en", "base.en". Used by both
-    /// dictation and the assistant.
+    /// Whisper model id, e.g. "large-v3-turbo-q5_0", "small.en", "base.en". Kept in sync with
+    /// `stt_model` when the speech engine is Whisper (legacy field).
     pub model: String,
+    /// Speech engine: "whisper" or "parakeet".
+    #[serde(default = "default_stt_engine")]
+    pub stt_engine: String,
+    /// Model id for the chosen speech engine (Whisper id or Parakeet bundle id).
+    #[serde(default)]
+    pub stt_model: String,
     /// Spoken language code ("en", "hi", ...) or "auto".
     pub language: String,
     /// Output English whatever language was spoken (Whisper's translate mode).
@@ -28,14 +34,18 @@ pub struct Config {
     pub snippets: Vec<Snippet>,
     /// How dictation is tidied before paste: `clean`, `verbatim`, `message`, `email`, `code`.
     pub dictation_style: String,
-    /// Show live Whisper text in the widget while recording (uses extra CPU).
-    pub live_partials: bool,
-    /// How often to refresh live partials while recording, in milliseconds.
-    pub partial_interval_ms: u32,
     /// Offer to save word fixes from History edits into replacements / vocabulary.
     pub learn_from_corrections: bool,
     /// Strip "um", "uh", stutters and similar.
     pub remove_fillers: bool,
+    /// Polish dictation with the local AI (the assistant's brain) after the rule-based cleanup.
+    pub llm_cleanup: bool,
+    /// Per-app dictation style, matched on the bundle id of the app in front.
+    pub app_styles: Vec<AppStyle>,
+    /// Edit-by-voice key (macOS): select text, hold it, say how to change it. "" = off.
+    pub command_hotkey: String,
+    /// Keep each dictation's audio so it can be replayed or re-transcribed.
+    pub keep_audio: bool,
     /// Put back whatever was on the clipboard after pasting.
     pub restore_clipboard: bool,
     /// Keep a local log of everything dictated, and of the assistant's questions and answers.
@@ -69,9 +79,14 @@ pub struct Config {
     pub voice: String,
     /// Speaking rate in words per minute.
     pub speech_rate: u32,
-    /// "system" (the macOS voice above) or "natural" (Kokoro: a natural AI voice that runs on this
-    /// Mac and starts about as quickly; about 330 MB once).
+    /// "system" (the macOS voice above), "natural" (Kokoro), or "cloned" (OpenVoice sidecar).
     pub voice_engine: String,
+    /// Active cloned voice profile id under `voices/` in the data dir.
+    #[serde(default)]
+    pub cloned_voice_id: Option<String>,
+    /// User accepted the voice-cloning permission notice.
+    #[serde(default)]
+    pub clone_consent: bool,
     /// The natural voice's speaker, one of `model::NATURAL_VOICES` ("af_heart", "bm_george", …).
     pub natural_voice: String,
     /// Speak answers aloud. Off = answers only appear in the widget.
@@ -101,6 +116,25 @@ pub struct Config {
     /// Place used for the weather when none is named ("Pune", "London"). Empty: the location
     /// the weather service guesses from your internet connection.
     pub location: String,
+
+    /// Local REST API for agents (127.0.0.1 only).
+    #[serde(default)]
+    pub http_enabled: bool,
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+    #[serde(default)]
+    pub http_token: String,
+    /// Shown in Settings; MCP is started with `murmur --mcp` and proxies to HTTP.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+}
+
+fn default_stt_engine() -> String {
+    "whisper".into()
+}
+
+fn default_http_port() -> u16 {
+    8765
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -118,6 +152,17 @@ pub struct Snippet {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppStyle {
+    /// Bundle id, e.g. "com.tinyspeck.slackmacgap".
+    pub bundle: String,
+    /// One of the `dictation_style` values.
+    pub style: String,
+    /// Extra instructions for the local AI in this app.
+    #[serde(default)]
+    pub prompt: String,
+}
+
 fn default_snippet_mode() -> String {
     "suffix".into()
 }
@@ -127,6 +172,8 @@ impl Default for Config {
         Self {
             hotkey: if cfg!(target_os = "macos") { "fn" } else { "right_ctrl" }.into(),
             model: "large-v3-turbo-q5_0".into(),
+            stt_engine: default_stt_engine(),
+            stt_model: "large-v3-turbo-q5_0".into(),
             language: "en".into(),
             translate: false,
             input_device: None,
@@ -134,10 +181,12 @@ impl Default for Config {
             replacements: vec![],
             snippets: vec![],
             dictation_style: "clean".into(),
-            live_partials: true,
-            partial_interval_ms: 900,
             learn_from_corrections: true,
             remove_fillers: true,
+            llm_cleanup: false,
+            app_styles: vec![],
+            command_hotkey: String::new(),
+            keep_audio: false,
             restore_clipboard: true,
             save_history: true,
             sounds: true,
@@ -155,6 +204,8 @@ impl Default for Config {
             voice: "Daniel".into(),
             speech_rate: 195,
             voice_engine: "system".into(),
+            cloned_voice_id: None,
+            clone_consent: false,
             natural_voice: "af_heart".into(),
             speak_replies: true,
             forget_after_minutes: 5,
@@ -167,6 +218,50 @@ impl Default for Config {
             actions: true,
             web_access: true,
             location: String::new(),
+            http_enabled: false,
+            http_port: default_http_port(),
+            http_token: String::new(),
+            mcp_enabled: false,
+        }
+    }
+}
+
+impl Config {
+    /// Model id used for final transcription.
+    pub fn effective_stt_model(&self) -> &str {
+        if self.stt_model.is_empty() {
+            &self.model
+        } else {
+            &self.stt_model
+        }
+    }
+
+    /// Style for the app in front: a per-app rule, else the global style. Returns (style, prompt).
+    pub fn style_for(&self, bundle: &str) -> (String, String) {
+        self.app_styles
+            .iter()
+            .find(|a| !bundle.is_empty() && a.bundle == bundle)
+            .map(|a| (a.style.clone(), a.prompt.clone()))
+            .unwrap_or_else(|| (self.dictation_style.clone(), String::new()))
+    }
+
+    /// Keep legacy `model` and `stt_model` aligned when saving from the UI.
+    pub fn sync_stt_fields(&mut self) {
+        if self.stt_model.is_empty() {
+            self.stt_model = self.model.clone();
+        }
+        if self.stt_engine == "whisper" {
+            self.model = self.stt_model.clone();
+        }
+    }
+
+    pub fn migrate_from_legacy(&mut self) {
+        if self.stt_model.is_empty() {
+            self.stt_model = self.model.clone();
+        }
+        // The v2 bundle (sherpa-onnx layout) was replaced by v3 before release.
+        if self.stt_model == "tdt-0.6b-v2" {
+            self.stt_model = "tdt-0.6b-v3".into();
         }
     }
 }
@@ -241,6 +336,8 @@ pub fn load() -> Config {
         },
         None => Config::default(),
     };
+    let mut cfg = cfg;
+    cfg.migrate_from_legacy();
     if let Ok(s) = serde_json::to_string_pretty(&cfg) {
         if existing.as_deref() != Some(s.as_str()) {
             let _ = std::fs::write(&path, s);

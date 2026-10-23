@@ -6,7 +6,7 @@ use crate::hotkey::HotkeyEvent;
 use crate::{cleanup, focus, history, paste, snippets, Mode, Shared, MIN_SECONDS, SILENCE_RMS};
 use crate::audio::TARGET_RATE;
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -38,19 +38,17 @@ struct Gesture {
     ignore_release: bool,
 }
 
-#[derive(Serialize, Clone)]
-struct PartialTranscript {
-    text: String,
-}
-
 pub struct Dictation {
     app: AppHandle,
     shared: Arc<Shared>,
     phase: Mutex<Phase>,
     gesture: Mutex<Gesture>,
     pub last_text: Mutex<Option<String>>,
-    /// Bumped when a recording starts; partial workers exit when this changes.
-    recording_id: AtomicU64,
+    /// This recording is a command-mode instruction, not dictation.
+    pub(crate) command: std::sync::atomic::AtomicBool,
+    /// For the local AI polish (set once the assistant exists).
+    #[cfg(target_os = "macos")]
+    pub(crate) assistant: std::sync::OnceLock<Arc<crate::assistant::Assistant>>,
 }
 
 impl Dictation {
@@ -61,7 +59,9 @@ impl Dictation {
             phase: Mutex::new(Phase::Idle),
             gesture: Mutex::new(Gesture::default()),
             last_text: Mutex::new(None),
-            recording_id: AtomicU64::new(0),
+            command: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
+            assistant: std::sync::OnceLock::new(),
         }
     }
 
@@ -122,9 +122,10 @@ impl Dictation {
                     drop(g);
                     mlog!("hands-free stopped");
                     self.finish_recording();
-                } else if self.shared.loading() {
+                } else if self.shared.loading() || self.shared.sampling.load(Ordering::SeqCst) {
                     drop(g);
-                    self.emit("error", Some("Model still loading…".into()), None);
+                    let why = if self.shared.loading() { "Model still loading…" } else { "Recording a voice sample…" };
+                    self.emit("error", Some(why.into()), None);
                     self.show_widget();
                     self.hide_widget_later(Duration::from_millis(1500));
                 } else if self.phase() == Phase::Idle {
@@ -209,9 +210,7 @@ impl Dictation {
             return;
         }
         self.emit("recording", None, None);
-        let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text: String::new() });
         self.shared.preload_transcriber();
-        self.spawn_partial_worker();
         // Show only if this turns out to be a hold, so quick taps never flash the widget.
         let core = self.clone();
         let pressed_at = self.gesture.lock().unwrap().pressed_at;
@@ -226,50 +225,6 @@ impl Dictation {
                 core.shared.play("Tink");
             }
         });
-    }
-
-    fn spawn_partial_worker(self: &Arc<Self>) {
-        let id = self.recording_id.fetch_add(1, Ordering::SeqCst) + 1;
-        let core = self.clone();
-        std::thread::spawn(move || core.partial_loop(id));
-    }
-
-    fn partial_loop(self: &Arc<Self>, id: u64) {
-        let min_samples = TARGET_RATE as usize * 6 / 5;
-        let mut last_hint = String::new();
-        loop {
-            let cfg = self.shared.cfg();
-            if !cfg.live_partials {
-                std::thread::sleep(Duration::from_millis(cfg.partial_interval_ms.max(400) as u64));
-                if self.recording_id.load(Ordering::SeqCst) != id || self.phase() != Phase::Recording {
-                    break;
-                }
-                continue;
-            }
-            std::thread::sleep(Duration::from_millis(cfg.partial_interval_ms.max(400) as u64));
-            if self.recording_id.load(Ordering::SeqCst) != id || self.phase() != Phase::Recording {
-                break;
-            }
-            let Some(tail) = self.shared.recorder.snapshot() else { break };
-            if tail.samples.len() < min_samples {
-                continue;
-            }
-            let lang = cfg.language.as_str();
-            let hint = if last_hint.is_empty() { None } else { Some(last_hint.as_str()) };
-            let Ok(raw) = self.shared.transcribe_partial(&tail.samples, lang, cfg.translate, &cfg.vocabulary, hint)
-            else {
-                continue;
-            };
-            if raw.is_empty() || cleanup::is_hallucination(&raw) {
-                continue;
-            }
-            let text = cleanup::clean_for_style(&raw, &cfg.dictation_style, cfg.remove_fillers);
-            if text.is_empty() {
-                continue;
-            }
-            last_hint = raw;
-            let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text });
-        }
     }
 
     pub fn cancel_recording(self: &Arc<Self>) {
@@ -311,7 +266,6 @@ impl Dictation {
             return Ok(Duration::ZERO);
         }
         self.emit("transcribing", None, None);
-        let _ = self.app.emit_to("widget", "partial-transcript", PartialTranscript { text: String::new() });
         let started = Instant::now();
         let cfg = self.shared.cfg();
         let raw = self.shared.transcribe(&rec.samples, &cfg.language, cfg.translate, &cfg.vocabulary)?;
@@ -320,11 +274,12 @@ impl Dictation {
         if cleanup::is_hallucination(&raw) {
             return Ok(Duration::ZERO);
         }
-        let mut text = cleanup::apply_replacements(
-            &cleanup::clean_for_style(&raw, &cfg.dictation_style, cfg.remove_fillers),
-            &cfg.replacements,
-        );
-        text = snippets::apply_snippets(&text, &cfg.snippets);
+        #[cfg(target_os = "macos")]
+        if self.command.load(Ordering::SeqCst) {
+            return self.run_command(&raw, &cfg, quick);
+        }
+        let bundle = focus::frontmost_bundle();
+        let text = self.finish_text(&raw, &cfg, &bundle);
         if text.is_empty() {
             return Ok(Duration::ZERO);
         }
@@ -361,10 +316,72 @@ impl Dictation {
         *self.last_text.lock().unwrap() = Some(text.clone());
         self.shared.touch();
         if cfg.save_history {
-            history::append(&text, &raw, rec.seconds(), elapsed);
+            history::append(&text, &raw, rec.seconds(), elapsed, &bundle, cfg.keep_audio.then_some(&rec.samples[..]));
             let _ = self.app.emit_to("main", "history-updated", ());
         }
         Ok(hide_after)
+    }
+
+    /// Transcript → the text to insert: the style for `bundle`'s app, the local AI polish when
+    /// it's on, then replacements and snippets (last, so the user's own fixes always win).
+    pub fn finish_text(&self, raw: &str, cfg: &crate::config::Config, bundle: &str) -> String {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+        let (style, prompt) = cfg.style_for(bundle);
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut text = cleanup::clean_for_style(raw, &style, cfg.remove_fillers);
+        #[cfg(target_os = "macos")]
+        if cfg.llm_cleanup {
+            if let Some(polished) = self.assistant.get().and_then(|a| crate::polish::clean(a, cfg, &text, &style, &prompt)) {
+                text = polished;
+            }
+        }
+        snippets::apply_snippets(&cleanup::apply_replacements(&text, &cfg.replacements), &cfg.snippets)
+    }
+
+    /// Command mode: the spoken `instruction` applied to the selected text (or, with nothing
+    /// selected, used to write new text), pasted over the selection.
+    #[cfg(target_os = "macos")]
+    fn run_command(&self, instruction: &str, cfg: &crate::config::Config, done_after: Duration) -> anyhow::Result<Duration> {
+        let instruction = cleanup::clean_for_style(instruction, "clean", true);
+        if instruction.is_empty() {
+            return Ok(Duration::ZERO);
+        }
+        let Some(assistant) = self.assistant.get().filter(|_| crate::polish::available(cfg)) else {
+            anyhow::bail!("Command mode needs the local AI: download it under Assistant, or choose Ollama");
+        };
+        let selection = paste::selected_text().unwrap_or_default();
+        mlog!("command: {instruction:?} on {} selected chars", selection.len());
+        let text = crate::polish::rewrite(assistant, cfg, &selection, &instruction).ok_or_else(|| anyhow::anyhow!("The local AI didn't answer in time"))?;
+        paste::insert(&text, cfg.restore_clipboard)?;
+        self.emit("done", None, None);
+        Ok(done_after)
+    }
+
+    /// An audio file → text, saved to History like a dictation.
+    pub fn transcribe_file(&self, path: &std::path::Path) -> anyhow::Result<String> {
+        let samples = load_audio_file(path)?;
+        let cfg = self.shared.cfg();
+        let started = Instant::now();
+        let mut raw = String::new();
+        for chunk in chunks(&samples) {
+            let part = self.shared.transcribe(chunk, &cfg.language, cfg.translate, &cfg.vocabulary)?;
+            if !part.trim().is_empty() && !cleanup::is_hallucination(&part) {
+                if !raw.is_empty() {
+                    raw.push(' ');
+                }
+                raw.push_str(part.trim());
+            }
+        }
+        let text = self.finish_text(&raw, &cfg, "");
+        if text.is_empty() {
+            anyhow::bail!("No speech found in this file");
+        }
+        if cfg.save_history {
+            let seconds = samples.len() as f32 / TARGET_RATE as f32;
+            history::append(&text, &raw, seconds, started.elapsed().as_millis(), "", cfg.keep_audio.then_some(&samples[..]));
+            let _ = self.app.emit_to("main", "history-updated", ());
+        }
+        Ok(text)
     }
 
     fn fail(self: &Arc<Self>, message: &str) {
@@ -390,3 +407,47 @@ impl Dictation {
         self.shared.hide_widget();
     }
 }
+
+/// Any audio file as 16 kHz mono: WAV directly, anything else through macOS's `afconvert`.
+fn load_audio_file(path: &std::path::Path) -> anyhow::Result<Vec<f32>> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+        return crate::audio::read_wav(path, TARGET_RATE);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let tmp = std::env::temp_dir().join(format!("murmur-import-{}.wav", std::process::id()));
+        let converted = std::process::Command::new("/usr/bin/afconvert")
+            .args(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"])
+            .arg(path)
+            .arg(&tmp)
+            .status()?
+            .success();
+        let samples = if converted { crate::audio::read_wav(&tmp, TARGET_RATE) } else { Err(anyhow::anyhow!("macOS can't read the audio in this file")) };
+        let _ = std::fs::remove_file(&tmp);
+        samples
+    }
+    // shortcut: Windows reads WAV only; add a decoder (symphonia) if people import other formats there.
+    #[cfg(not(target_os = "macos"))]
+    Err(anyhow::anyhow!("Only WAV files can be transcribed on Windows for now"))
+}
+
+/// Long audio in pieces of at most 30 s (what Whisper sees at once), each cut at the quietest
+/// 100 ms between 20 and 30 s so words aren't split.
+fn chunks(samples: &[f32]) -> Vec<&[f32]> {
+    const MAX: usize = 30 * TARGET_RATE as usize;
+    const MIN: usize = 20 * TARGET_RATE as usize;
+    const STEP: usize = TARGET_RATE as usize / 10;
+    let energy = |w: &[f32]| w.iter().map(|s| s * s).sum::<f32>();
+    let mut out = vec![];
+    let mut rest = samples;
+    while rest.len() > MAX {
+        let cut = (MIN..MAX - STEP).step_by(STEP).min_by(|&a, &b| energy(&rest[a..a + STEP]).total_cmp(&energy(&rest[b..b + STEP]))).unwrap_or(MAX) + STEP / 2;
+        out.push(&rest[..cut]);
+        rest = &rest[cut..];
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+

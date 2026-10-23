@@ -8,7 +8,7 @@ mod assistant;
 mod audio;
 mod cleanup;
 mod commands;
-mod config;
+pub mod config;
 mod dictation;
 #[cfg(target_os = "macos")]
 mod fn_key;
@@ -18,9 +18,17 @@ mod history;
 mod hotkey;
 mod learn;
 mod snippets;
-mod model;
+pub mod model;
 mod paste;
-mod transcribe;
+pub mod stt;
+#[cfg(target_os = "macos")]
+mod http;
+#[cfg(target_os = "macos")]
+mod polish;
+#[cfg(target_os = "macos")]
+mod integration;
+#[cfg(target_os = "macos")]
+pub mod mcp;
 // Speech detection: dictation (every platform) and the assistant (macOS) both use it.
 mod voice;
 mod widget_drag;
@@ -39,7 +47,7 @@ use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry};
-use transcribe::Transcriber;
+use stt::SttBackend;
 
 /// Clips shorter than this are treated as accidental taps.
 const MIN_SECONDS: f32 = 0.3;
@@ -59,13 +67,15 @@ pub struct Shared {
     app: AppHandle,
     cfg: RwLock<Config>,
     recorder: Recorder,
-    transcriber: Mutex<Option<Arc<Transcriber>>>,
-    /// Only one Whisper decode at a time (final + live partials).
+    stt: Mutex<Option<Arc<SttBackend>>>,
+    /// Only one decode at a time (dictation, the assistant, file imports).
     transcribe_lock: Mutex<()>,
     /// Serialises model loads so a press during an idle reload doesn't load it twice.
     load_lock: Mutex<()>,
     /// The speech model is being downloaded or loaded (or waits for setup to download it).
     loading: AtomicBool,
+    /// The mic is taken by a voice-clone sample; dictation waits.
+    sampling: AtomicBool,
     last_used: Mutex<Instant>,
     /// Download progress (0–1) of the speech ("speech") and AI ("brain") models, while downloading.
     downloads: Mutex<HashMap<&'static str, f32>>,
@@ -106,7 +116,7 @@ impl Shared {
     }
 
     fn model_loaded(&self) -> bool {
-        self.transcriber.lock().unwrap().is_some()
+        self.stt.lock().unwrap().is_some()
     }
 
     fn touch(&self) {
@@ -114,7 +124,7 @@ impl Shared {
     }
 
     /// The loaded model, loading it first if it was unloaded to save memory.
-    /// Runs Whisper under `transcribe_lock` so partial and final decodes never overlap.
+    /// Runs the speech model under `transcribe_lock` so decodes never overlap.
     pub fn transcribe(
         &self,
         audio: &[f32],
@@ -122,51 +132,40 @@ impl Shared {
         translate: bool,
         vocabulary: &[String],
     ) -> anyhow::Result<String> {
-        let t = self.ensure_transcriber()?;
+        let t = self.ensure_stt()?;
         let _g = self.transcribe_lock.lock().unwrap();
         t.transcribe(audio, language, translate, vocabulary).map_err(Into::into)
     }
 
-    pub fn transcribe_partial(
-        &self,
-        audio: &[f32],
-        language: &str,
-        translate: bool,
-        vocabulary: &[String],
-        previous_hint: Option<&str>,
-    ) -> anyhow::Result<String> {
-        let t = self.ensure_transcriber()?;
-        let _g = self.transcribe_lock.lock().unwrap();
-        t.transcribe_partial(audio, language, translate, vocabulary, previous_hint)
-            .map_err(Into::into)
-    }
-
-    fn ensure_transcriber(&self) -> anyhow::Result<Arc<Transcriber>> {
-        if let Some(t) = self.transcriber.lock().unwrap().clone() {
+    fn ensure_stt(&self) -> anyhow::Result<Arc<SttBackend>> {
+        let cfg = self.cfg();
+        let slot = &self.stt;
+        if let Some(t) = slot.lock().unwrap().clone() {
             return Ok(t);
         }
+        let dir = config::data_dir();
+        let (engine, model_id) = (cfg.stt_engine.as_str(), cfg.effective_stt_model());
         let _guard = self.load_lock.lock().unwrap();
-        if let Some(t) = self.transcriber.lock().unwrap().clone() {
+        if let Some(t) = slot.lock().unwrap().clone() {
             return Ok(t);
         }
-        let path = model::model_path(&config::data_dir(), &self.cfg().model);
-        if !path.exists() {
+        if !stt::model_ready(engine, &dir, model_id) {
             return Err(anyhow::anyhow!("Speech model is not downloaded yet"));
         }
         let started = Instant::now();
-        let t = Arc::new(Transcriber::load(&path)?);
-        mlog!("model reloaded in {} ms", started.elapsed().as_millis());
-        *self.transcriber.lock().unwrap() = Some(t.clone());
+        let t = Arc::new(SttBackend::load(engine, &stt::model_path(engine, &dir, model_id))?);
+        mlog!("speech model ({engine}/{model_id}) reloaded in {} ms", started.elapsed().as_millis());
+        *slot.lock().unwrap() = Some(t.clone());
         Ok(t)
     }
 
     /// A recording has started: reload the model (if it was freed) while the user is talking.
-    fn preload_transcriber(self: &Arc<Self>) {
+    pub fn preload_transcriber(self: &Arc<Self>) {
         self.touch();
         if !self.model_loaded() {
             let shared = self.clone();
             std::thread::spawn(move || {
-                if let Err(e) = shared.ensure_transcriber() {
+                if let Err(e) = shared.ensure_stt() {
                     mlog!("model reload failed: {e}");
                 }
             });
@@ -183,8 +182,10 @@ impl Shared {
                 continue;
             }
             let idle = self.last_used.lock().unwrap().elapsed();
-            if idle >= Duration::from_secs(minutes as u64 * 60) && self.transcriber.lock().unwrap().take().is_some() {
-                mlog!("model unloaded after {minutes} idle minutes");
+            if idle >= Duration::from_secs(minutes as u64 * 60) {
+                if self.stt.lock().unwrap().take().is_some() {
+                    mlog!("model unloaded after {minutes} idle minutes");
+                }
             }
         }
     }
@@ -285,10 +286,12 @@ impl Shared {
     fn load_model(self: &Arc<Self>) {
         let _guard = self.load_lock.lock().unwrap();
         self.loading.store(true, Ordering::SeqCst);
-        *self.transcriber.lock().unwrap() = None;
+        *self.stt.lock().unwrap() = None;
         let dir = config::data_dir();
-        let name = self.cfg().model;
-        let needs_download = !model::model_path(&dir, &name).exists();
+        let cfg = self.cfg();
+        let name = cfg.effective_stt_model();
+        let engine = cfg.stt_engine.as_str();
+        let needs_download = !stt::model_ready(engine, &dir, name);
         // During setup the app window shows the progress; afterwards the floating widget does.
         let widget = needs_download && self.cfg().setup_done;
         if needs_download {
@@ -298,7 +301,7 @@ impl Shared {
             self.emit_widget("downloading", Some("Downloading speech model…".into()), Some(0.0));
             self.show_widget(Mode::Dictation);
         }
-        let path = model::ensure(&dir, &name, |done, total| {
+        let path = stt::ensure_model(engine, name, &dir, |done, total| {
             let pct = if total > 0 { done as f32 / total as f32 } else { 0.0 };
             self.set_status(&format!("Downloading speech model… {:.0}%", pct * 100.0));
             self.download_progress("speech", Some(pct));
@@ -321,11 +324,11 @@ impl Shared {
         };
         self.set_status("Loading speech model…");
         let started = Instant::now();
-        match Transcriber::load(&path) {
+        match SttBackend::load(engine, &path) {
             Ok(t) => {
                 // First inference compiles GPU kernels; do it now instead of on the first dictation.
-                let _ = t.transcribe(&vec![0.0; audio::TARGET_RATE as usize], &self.cfg().language, false, &[]);
-                *self.transcriber.lock().unwrap() = Some(Arc::new(t));
+                let _ = t.warmup(&cfg.language);
+                *self.stt.lock().unwrap() = Some(Arc::new(t));
                 self.loading.store(false, Ordering::SeqCst);
                 self.touch();
                 mlog!("speech model {name} ready in {} ms", started.elapsed().as_millis());
@@ -346,10 +349,10 @@ impl Shared {
 
 /// Everything the app runs: shared state plus the two things you can do with your voice.
 pub struct Murmur {
-    shared: Arc<Shared>,
-    dictation: Arc<Dictation>,
+    pub(crate) shared: Arc<Shared>,
+    pub(crate) dictation: Arc<Dictation>,
     #[cfg(target_os = "macos")]
-    assistant: Arc<Assistant>,
+    pub(crate) assistant: Arc<Assistant>,
 }
 
 impl Murmur {
@@ -373,9 +376,13 @@ impl Murmur {
                         a.stop_all();
                     }
                 }
+                if event == HotkeyEvent::Pressed && self.dictation.phase() == dictation::Phase::Idle {
+                    self.dictation.command.store(false, Ordering::SeqCst);
+                }
                 self.dictation.on_hotkey(event)
             }
             Hotkey::Assistant => self.on_assistant_key(event),
+            Hotkey::Command => self.on_command_key(event),
         }
     }
 
@@ -385,6 +392,23 @@ impl Murmur {
             return false;
         }
         self.assistant.on_hotkey(event)
+    }
+
+    /// Command mode records like dictation; `process` then rewrites the selection instead.
+    #[cfg(target_os = "macos")]
+    fn on_command_key(&self, event: HotkeyEvent) -> bool {
+        if event == HotkeyEvent::Pressed {
+            if self.dictation.phase() != dictation::Phase::Idle || self.assistant.phase() != assistant::Phase::Idle {
+                return false;
+            }
+            self.dictation.command.store(true, Ordering::SeqCst);
+        }
+        self.dictation.on_hotkey(event)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn on_command_key(&self, _event: HotkeyEvent) -> bool {
+        false
     }
 
     /// No assistant here; its key is never listened for.
@@ -398,7 +422,10 @@ impl Murmur {
         let cfg = self.shared.cfg();
         let mut keys = vec![(cfg.hotkey.clone(), Hotkey::Dictation)];
         if cfg!(target_os = "macos") && cfg.assistant_enabled && cfg.assistant_hotkey != cfg.hotkey {
-            keys.push((cfg.assistant_hotkey, Hotkey::Assistant));
+            keys.push((cfg.assistant_hotkey.clone(), Hotkey::Assistant));
+        }
+        if cfg!(target_os = "macos") && !cfg.command_hotkey.is_empty() && keys.iter().all(|(k, _)| *k != cfg.command_hotkey) {
+            keys.push((cfg.command_hotkey, Hotkey::Command));
         }
         keys
     }
@@ -790,6 +817,11 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::history_page,
         commands::history_delete,
         commands::history_clear,
+        commands::history_retranscribe,
+        commands::history_play_audio,
+        commands::history_export,
+        commands::recent_apps,
+        commands::transcribe_file,
         commands::history_update,
         commands::history_suggest_learnings,
         commands::apply_learnings,
@@ -815,6 +847,8 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::new_conversation,
         commands::open_voice_settings,
         commands::confirm_answer,
+        commands::record_clone_sample,
+        commands::clone_profile_ready,
     ]
 }
 
@@ -830,6 +864,11 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::history_page,
         commands::history_delete,
         commands::history_clear,
+        commands::history_retranscribe,
+        commands::history_play_audio,
+        commands::history_export,
+        commands::recent_apps,
+        commands::transcribe_file,
         commands::history_update,
         commands::history_suggest_learnings,
         commands::apply_learnings,
@@ -943,10 +982,11 @@ pub fn run() {
                 app: app.handle().clone(),
                 cfg: RwLock::new(cfg),
                 recorder: Recorder::new(),
-                transcriber: Mutex::new(None),
+                stt: Mutex::new(None),
                 transcribe_lock: Mutex::new(()),
                 load_lock: Mutex::new(()),
                 loading: AtomicBool::new(true),
+                sampling: AtomicBool::new(false),
                 last_used: Mutex::new(Instant::now()),
                 downloads: Mutex::new(HashMap::new()),
                 status_item: status,
@@ -959,6 +999,8 @@ pub fn run() {
                 assistant: Arc::new(Assistant::new(shared.clone())),
                 shared: shared.clone(),
             });
+            #[cfg(target_os = "macos")]
+            let _ = murmur.dictation.assistant.set(murmur.assistant.clone());
 
             let trusted = paste::has_permission(true);
             let c = shared.cfg();
@@ -1028,7 +1070,9 @@ pub fn run() {
             std::thread::spawn(move || s.watch_idle());
             app.manage(shared);
             app.manage(murmur.dictation.clone());
-            app.manage(murmur);
+            app.manage(murmur.clone());
+            #[cfg(target_os = "macos")]
+            http::start(&app.handle(), murmur.clone());
             // Onboarding: show the app window on first run or while a permission is missing.
             // Debug aid: `open --env MURMUR_TAB=insights Murmur.app` opens straight onto a page.
             let debug_tab = std::env::var("MURMUR_TAB").ok();
@@ -1081,26 +1125,16 @@ pub fn cli_ask(question: &str) -> anyhow::Result<()> {
 /// Headless check of the speech pipeline: `murmur --transcribe file.wav`.
 pub fn cli_transcribe(path: &str) -> anyhow::Result<()> {
     let cfg = config::load();
-    let mut reader = hound::WavReader::open(path)?;
-    let spec = reader.spec();
-    let interleaved: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
-        hound::SampleFormat::Int => {
-            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            reader.samples::<i32>().map(|s| s.map(|v| v as f32 / max)).collect::<Result<_, _>>()?
-        }
-    };
-    let ch = spec.channels as usize;
-    let mono: Vec<f32> = interleaved.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
-    let samples = audio::resample(&mono, spec.sample_rate, audio::TARGET_RATE);
+    let samples = audio::read_wav(std::path::Path::new(path), audio::TARGET_RATE)?;
 
-    let model_path = model::ensure(&config::data_dir(), &cfg.model, |d, t| {
+    let engine = cfg.stt_engine.as_str();
+    let model_path = stt::ensure_model(engine, cfg.effective_stt_model(), &config::data_dir(), |d, t| {
         eprint!("\rdownloading model {} / {} MB", d >> 20, t >> 20);
     })?;
     let t0 = Instant::now();
-    let tr = Transcriber::load(&model_path)?;
+    let tr = SttBackend::load(engine, &model_path)?;
     eprintln!("model loaded in {} ms", t0.elapsed().as_millis());
-    let _ = tr.transcribe(&vec![0.0; audio::TARGET_RATE as usize], &cfg.language, false, &[]);
+    let _ = tr.warmup(&cfg.language);
 
     let t1 = Instant::now();
     let raw = tr.transcribe(&samples, &cfg.language, cfg.translate, &cfg.vocabulary)?;

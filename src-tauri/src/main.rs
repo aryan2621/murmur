@@ -27,5 +27,13 @@ fn main() {
         murmur_lib::cli_focus_test();
         return;
     }
+    #[cfg(target_os = "macos")]
+    if args.len() == 2 && args[1] == "--mcp" {
+        if let Err(e) = murmur_lib::mcp::run_stdio() {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     murmur_lib::run();
 }

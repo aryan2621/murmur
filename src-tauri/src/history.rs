@@ -15,6 +15,12 @@ pub struct Entry {
     pub audio_seconds: f32,
     #[serde(default)]
     pub transcribe_ms: u64,
+    /// Bundle id of the app dictated into ("" if unknown, or a file transcription).
+    #[serde(default)]
+    pub app: String,
+    /// File name in `audio_dir()` when the clip was kept ("" otherwise).
+    #[serde(default)]
+    pub audio: String,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -34,14 +40,31 @@ pub fn path() -> PathBuf {
     crate::config::data_dir().join("history.jsonl")
 }
 
-/// Appends one entry.
-pub fn append(text: &str, raw: &str, audio_seconds: f32, transcribe_ms: u128) {
+pub fn audio_dir() -> PathBuf {
+    crate::config::data_dir().join("audio")
+}
+
+/// Appends one entry, keeping its 16 kHz audio as a WAV when `samples` is given.
+pub fn append(text: &str, raw: &str, audio_seconds: f32, transcribe_ms: u128, app: &str, samples: Option<&[f32]>) {
+    let now = chrono::Local::now();
+    let audio = samples
+        .and_then(|s| {
+            let name = format!("{}.wav", now.format("%Y%m%d-%H%M%S%3f"));
+            let saved = std::fs::create_dir_all(audio_dir()).map_err(anyhow::Error::from).and_then(|_| crate::audio::write_wav(&audio_dir().join(&name), s));
+            if let Err(e) = &saved {
+                mlog!("couldn't keep the dictation audio: {e}");
+            }
+            saved.ok().map(|_| name)
+        })
+        .unwrap_or_default();
     let entry = Entry {
-        time: chrono::Local::now().to_rfc3339(),
+        time: now.to_rfc3339(),
         text: text.to_string(),
         raw: raw.to_string(),
         audio_seconds,
         transcribe_ms: transcribe_ms as u64,
+        app: app.to_string(),
+        audio,
     };
     let Ok(line) = serde_json::to_string(&entry) else { return };
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path()) {
@@ -84,18 +107,25 @@ pub fn page(query: &str, page: usize, size: usize) -> (Vec<Entry>, usize) {
 }
 
 pub fn delete(time: &str) -> anyhow::Result<()> {
-    let entries: Vec<Entry> = load().into_iter().filter(|e| e.time != time).collect();
-    write_all(&entries)
+    let (gone, entries): (Vec<Entry>, Vec<Entry>) = load().into_iter().partition(|e| e.time == time);
+    write_all(&entries)?;
+    for e in gone.iter().filter(|e| !e.audio.is_empty()) {
+        let _ = std::fs::remove_file(audio_dir().join(&e.audio));
+    }
+    Ok(())
 }
 
-/// Updates the final text of one entry (keeps `raw` unchanged).
-pub fn update_text(time: &str, text: &str) -> anyhow::Result<Option<Entry>> {
+/// Updates the final text of one entry, and its transcript when `raw` is given.
+pub fn update_text(time: &str, text: &str, raw: Option<&str>) -> anyhow::Result<Option<Entry>> {
     let mut found = None;
     let entries: Vec<Entry> = load()
         .into_iter()
         .map(|mut e| {
             if e.time == time {
                 e.text = text.to_string();
+                if let Some(raw) = raw {
+                    e.raw = raw.to_string();
+                }
                 found = Some(e.clone());
             }
             e
@@ -113,7 +143,9 @@ pub fn entry_by_time(time: &str) -> Option<Entry> {
 }
 
 pub fn clear() -> anyhow::Result<()> {
-    write_all(&[])
+    write_all(&[])?;
+    let _ = std::fs::remove_dir_all(audio_dir());
+    Ok(())
 }
 
 /// Text of the most recent entry, if any.

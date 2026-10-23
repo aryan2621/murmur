@@ -77,15 +77,6 @@
     }
     .pill.visible { opacity: 1; transform: none; cursor: grab; }
     .pill.compact { min-width: 44px; padding: 0 14px; justify-content: center; }
-    .pill.withPartial { height: auto; min-height: 44px; flex-direction: column; align-items: stretch; padding: 10px 16px; gap: 6px; max-width: 320px; }
-    .partialRow { display: flex; align-items: center; gap: 10px; width: 100%; }
-    .partial {
-      font-size: 12px; line-height: 1.35; color: var(--fg); opacity: 0.92;
-      max-height: calc(1.35em * 3); overflow: hidden; text-overflow: ellipsis;
-      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-      user-select: text;
-    }
-    .partial.hidden { display: none !important; }
 
     .dot {
       flex: none; width: 8px; height: 8px; border-radius: 50%;
@@ -130,19 +121,16 @@
     </div>
   </div>
   <div class="pill" id="pill">
-    <div class="partialRow" id="partialRow">
-      <span class="dot" id="dot"></span>
-      <canvas id="wave" width="280" height="52"></canvas>
-      <svg class="icon hidden" id="icon" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
-      <span class="label hidden" id="label"></span>
-      <span class="bar hidden" id="bar"><i id="barFill"></i></span>
-    </div>
-    <div class="partial hidden" id="partial"></div>
+    <span class="dot" id="dot"></span>
+    <canvas id="wave" width="280" height="52"></canvas>
+    <svg class="icon hidden" id="icon" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+    <span class="label hidden" id="label"></span>
+    <span class="bar hidden" id="bar"><i id="barFill"></i></span>
   </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const pill = $("pill"), partialRow = $("partialRow"), partial = $("partial"), dot = $("dot"), wave = $("wave"), label = $("label"), bar = $("bar"), barFill = $("barFill"), icon = $("icon");
+    const pill = $("pill"), dot = $("dot"), wave = $("wave"), label = $("label"), bar = $("bar"), barFill = $("barFill"), icon = $("icon");
     const card = $("card"), question = $("question"), reply = $("reply"), confirmRow = $("confirm");
     const ctx = wave.getContext("2d");
 
@@ -200,20 +188,6 @@
       lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5" stroke="#e9b48c"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" stroke="#e9b48c"/>',
     };
 
-    function setPartial(text) {
-      const t = (text || "").trim();
-      if (!t) {
-        partial.textContent = "";
-        partial.classList.add("hidden");
-        pill.classList.remove("withPartial");
-      } else {
-        partial.textContent = t;
-        partial.classList.remove("hidden");
-        pill.classList.add("withPartial");
-      }
-      reportHitRects();
-    }
-
     function show(parts) {
       dot.classList.toggle("hidden", !parts.dot);
       wave.classList.toggle("hidden", !parts.wave);
@@ -223,7 +197,7 @@
       label.textContent = parts.label || "";
       if (parts.icon) icon.innerHTML = ICONS[parts.icon];
       if (parts.progress != null) barFill.style.width = `${Math.round(parts.progress * 100)}%`;
-      pill.className = "pill visible" + (parts.cls ? " " + parts.cls : "") + (partial.textContent && !partial.classList.contains("hidden") ? " withPartial" : "");
+      pill.className = "pill visible" + (parts.cls ? " " + parts.cls : "");
       reportHitRects();
     }
 
@@ -278,7 +252,6 @@
           animate("recording");
           break;
         case "transcribing":
-          setPartial("");
           show({ wave: true });
           animate("wave");
           break;
@@ -349,9 +322,6 @@
       levels.push(toHeight(e.payload));
       levels.shift();
     });
-    listen("partial-transcript", (e) => {
-      try { setPartial(e.payload?.text); } catch (err) { log(`partial failed: ${err}`); }
-    }).catch((err) => log(`partial listen failed: ${err}`));
   </script>
 </body>
 </html>

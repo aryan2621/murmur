@@ -1,5 +1,6 @@
-import { useDeferredValue, useMemo, useState } from "react";
-import { Search, Trash2 } from "lucide-react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Download, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -32,6 +33,28 @@ export default function DictationHistory() {
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
   const { entries, total, page, setPage, size, setSize, pages, refresh } = usePagedHistory(api.historyPage, deferred);
+  const [dropping, setDropping] = useState(false);
+
+  // Audio files dropped on the window are transcribed into History.
+  useEffect(() => {
+    const off = getCurrentWebview().onDragDropEvent(async ({ payload }) => {
+      if (payload.type === "over" || payload.type === "enter") return setDropping(true);
+      setDropping(false);
+      if (payload.type !== "drop") return;
+      for (const path of payload.paths) {
+        const name = path.split(/[\\/]/).pop();
+        const id = toast.loading(`Transcribing ${name}…`);
+        try {
+          await api.transcribeFile(path);
+          toast.success(`Transcribed ${name}`, { id });
+          refresh();
+        } catch (e) {
+          toast.error(`${name}: ${e}`, { id });
+        }
+      }
+    });
+    return () => void off.then((f) => f());
+  }, [refresh]);
 
   const groups = useMemo(() => {
     const out: { label: string; items: Entry[] }[] = [];
@@ -47,8 +70,17 @@ export default function DictationHistory() {
     <>
       <PageHeader
         title="History"
-        description={entries ? `${total.toLocaleString()} dictation${total === 1 ? "" : "s"}${query ? " match" : ""} · stored only on this Mac` : "Stored only on this Mac"}
+        description={`${entries ? `${total.toLocaleString()} dictation${total === 1 ? "" : "s"}${query ? " match" : ""} · ` : ""}${dropping ? "Drop to transcribe" : "Stored only on this Mac · drop an audio file here to transcribe it"}`}
         actions={
+          <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!total}
+            onClick={() => api.exportHistory("md").then((p) => toast(`Exported to ${p}`), (e) => toast.error(`Couldn't export: ${e}`))}
+          >
+            <Download /> Export
+          </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" size="sm" disabled={!total}>
@@ -75,6 +107,7 @@ export default function DictationHistory() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          </div>
         }
       />
 

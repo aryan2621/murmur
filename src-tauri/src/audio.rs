@@ -43,8 +43,6 @@ enum Cmd {
     Start(Option<String>, Processing, LevelFn, mpsc::Sender<Result<()>>),
     Stop(mpsc::Sender<Result<Recording>>),
     Peek(Duration, mpsc::Sender<Option<Tail>>),
-    /// Full buffer so far (mono 16 kHz), while still recording.
-    Snapshot(mpsc::Sender<Option<Tail>>),
 }
 
 /// The newest audio of a recording that is still running.
@@ -154,13 +152,6 @@ impl Recorder {
         wait.recv().ok()?
     }
 
-    /// All audio captured so far during an active recording.
-    pub fn snapshot(&self) -> Option<Tail> {
-        let (reply, wait) = mpsc::channel();
-        self.tx.send(Cmd::Snapshot(reply)).ok()?;
-        wait.recv().ok()?
-    }
-
     pub fn stop(&self) -> Result<Recording> {
         let (reply, wait) = mpsc::channel();
         self.tx.send(Cmd::Stop(reply))?;
@@ -200,16 +191,6 @@ fn audio_thread(rx: mpsc::Receiver<Cmd>) {
                         let b = buf.lock().unwrap();
                         let want = (span.as_secs_f64() * *rate as f64) as usize;
                         (b.samples[b.samples.len().saturating_sub(want)..].to_vec(), b.samples.len())
-                    };
-                    Tail { samples: resample(&raw, *rate, TARGET_RATE), total: (len as u64 * TARGET_RATE as u64 / *rate as u64) as usize }
-                });
-                let _ = reply.send(tail);
-            }
-            Cmd::Snapshot(reply) => {
-                let tail = active.as_ref().map(|(_, buf, rate)| {
-                    let (raw, len) = {
-                        let b = buf.lock().unwrap();
-                        (b.samples.clone(), b.samples.len())
                     };
                     Tail { samples: resample(&raw, *rate, TARGET_RATE), total: (len as u64 * TARGET_RATE as u64 / *rate as u64) as usize }
                 });
@@ -398,6 +379,33 @@ mod echo {
             Ok((Engine(engine), buf, stored_rate))
         }
     }
+}
+
+/// Any WAV file, mixed down to mono at `rate`.
+pub fn read_wav(path: &std::path::Path, rate: u32) -> Result<Vec<f32>> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader.samples::<i32>().map(|s| s.map(|v| v as f32 / max)).collect::<Result<_, _>>()?
+        }
+    };
+    let ch = spec.channels.max(1) as usize;
+    let mono: Vec<f32> = interleaved.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
+    Ok(resample(&mono, spec.sample_rate, rate))
+}
+
+/// Mono 16-bit WAV at `TARGET_RATE`, the format dictation audio is kept in.
+pub fn write_wav(path: &std::path::Path, samples: &[f32]) -> Result<()> {
+    let spec = hound::WavSpec { channels: 1, sample_rate: TARGET_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut writer = hound::WavWriter::create(path, spec)?;
+    for s in samples {
+        writer.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+    }
+    writer.finalize()?;
+    Ok(())
 }
 
 /// Box-filter downsampling: averages each output sample's input window, which also

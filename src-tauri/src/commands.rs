@@ -5,6 +5,7 @@
 // voice) never freezes the window or swallows clicks.
 
 use crate::config::{self, Config};
+use crate::dictation::Dictation;
 use crate::{audio, history, model, paste, Shared};
 use serde::Serialize;
 use std::sync::Arc;
@@ -21,6 +22,35 @@ pub struct ModelInfo {
     size_mb: u32,
     note: &'static str,
     downloaded: bool,
+    /// "whisper" or "parakeet"
+    engine: &'static str,
+}
+
+fn speech_models(dir: &std::path::Path) -> Vec<ModelInfo> {
+    let mut out: Vec<ModelInfo> = MODELS
+        .iter()
+        .map(|&(id, label, size_mb, note)| ModelInfo {
+            id,
+            label,
+            size_mb,
+            note,
+            downloaded: model::model_path(dir, id).exists(),
+            engine: "whisper",
+        })
+        .collect();
+    // Parakeet runs on ONNX Runtime, which Murmur only ships on macOS.
+    #[cfg(target_os = "macos")]
+    for &(id, label, size_mb, note) in &model::PARAKEET_MODELS {
+        out.push(ModelInfo {
+            id,
+            label,
+            size_mb,
+            note,
+            downloaded: model::parakeet_ready(dir, id),
+            engine: "parakeet",
+        });
+    }
+    out
 }
 
 const MODELS: &[(&str, &str, u32, &str)] = &[
@@ -177,16 +207,7 @@ pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
         #[cfg(not(target_os = "macos"))]
         assistant: None,
         permissions: Permissions { accessibility: paste::has_permission(false), microphone: microphone_status() },
-        models: MODELS
-            .iter()
-            .map(|&(id, label, size_mb, note)| ModelInfo {
-                id,
-                label,
-                size_mb,
-                note,
-                downloaded: model::model_path(&dir, id).exists(),
-            })
-            .collect(),
+        models: speech_models(&dir),
         devices: audio::input_device_names(),
         hotkeys: hotkeys(),
         login_enabled: app.autolaunch().is_enabled().unwrap_or(false),
@@ -204,14 +225,20 @@ pub fn save_config(app: AppHandle, shared: State<'_, Arc<Shared>>, config: Confi
         return Err("Dictation and the assistant need different keys".into());
     }
     let old = shared.cfg();
+    let mut config = config;
+    config.sync_stt_fields();
     config::save(&config).map_err(|e| e.to_string())?;
     *shared.cfg.write().unwrap() = config.clone();
     #[cfg(target_os = "macos")]
     app.state::<Arc<Assistant>>().inner().configure(&old, &config);
     let restarting = old.hotkey != config.hotkey
+        || old.command_hotkey != config.command_hotkey
         || old.assistant_enabled != config.assistant_enabled
         || (config.assistant_enabled && old.assistant_hotkey != config.assistant_hotkey);
-    let reloading_model = old.model != config.model && !restarting;
+    let reloading_model = !restarting
+        && (old.model != config.model
+            || old.stt_engine != config.stt_engine
+            || old.stt_model != config.stt_model);
     if restarting {
         mlog!("keys changed (dictation {}, assistant {}), restarting", config.hotkey, config.assistant_hotkey);
         std::thread::spawn(move || {
@@ -261,9 +288,69 @@ pub fn history_clear() -> Result<(), String> {
 
 #[tauri::command(async)]
 pub fn history_update(time: String, text: String) -> Result<history::Entry, String> {
-    history::update_text(&time, &text)
+    history::update_text(&time, &text, None)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Dictation not found".to_string())
+}
+
+/// Runs a kept clip through the current speech model and text settings again.
+#[tauri::command(async)]
+pub fn history_retranscribe(shared: State<'_, Arc<Shared>>, dictation: State<'_, Arc<Dictation>>, time: String) -> Result<history::Entry, String> {
+    let entry = history::entry_by_time(&time).ok_or("Dictation not found")?;
+    if entry.audio.is_empty() {
+        return Err("This dictation's audio wasn't kept".into());
+    }
+    let samples = audio::read_wav(&history::audio_dir().join(&entry.audio), audio::TARGET_RATE).map_err(|e| e.to_string())?;
+    let cfg = shared.cfg();
+    let raw = shared.transcribe(&samples, &cfg.language, cfg.translate, &cfg.vocabulary).map_err(|e| e.to_string())?;
+    let text = dictation.finish_text(&raw, &cfg, &entry.app);
+    history::update_text(&time, &text, Some(&raw)).map_err(|e| e.to_string())?.ok_or_else(|| "Dictation not found".into())
+}
+
+/// Opens a kept clip in the default audio player.
+#[tauri::command(async)]
+pub fn history_play_audio(time: String) -> Result<(), String> {
+    let entry = history::entry_by_time(&time).filter(|e| !e.audio.is_empty()).ok_or("No audio was kept for this dictation")?;
+    crate::open_path(&history::audio_dir().join(entry.audio))
+}
+
+/// Writes all of History to the Downloads folder as Markdown or CSV, opens it, returns its path.
+#[tauri::command(async)]
+pub fn history_export(format: String) -> Result<String, String> {
+    let entries = history::load();
+    let (ext, body) = if format == "csv" {
+        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        let rows = entries.iter().map(|e| format!("{},{},{:.1},{}", e.time, quote(&e.app), e.audio_seconds, quote(&e.text)));
+        ("csv", std::iter::once("time,app,seconds,text".to_string()).chain(rows).collect::<Vec<_>>().join("\n"))
+    } else {
+        ("md", entries.iter().map(|e| format!("## {}\n\n{}\n", e.time, e.text)).collect::<Vec<_>>().join("\n"))
+    };
+    let dir = dirs::download_dir().or_else(dirs::home_dir).ok_or("No Downloads folder")?;
+    let path = dir.join(format!("Murmur history {}.{ext}", chrono::Local::now().format("%Y-%m-%d %H.%M")));
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    crate::open_path(&path)?;
+    Ok(path.display().to_string())
+}
+
+/// Apps dictated into lately (bundle ids, newest first), offered for per-app styles.
+#[tauri::command(async)]
+pub fn recent_apps() -> Vec<String> {
+    let mut apps: Vec<String> = vec![];
+    for e in history::load().into_iter().rev().filter(|e| !e.app.is_empty()) {
+        if !apps.contains(&e.app) {
+            apps.push(e.app);
+        }
+        if apps.len() == 15 {
+            break;
+        }
+    }
+    apps
+}
+
+/// An audio file dropped on the window → text (also saved to History).
+#[tauri::command(async)]
+pub fn transcribe_file(dictation: State<'_, Arc<Dictation>>, path: String) -> Result<String, String> {
+    dictation.transcribe_file(std::path::Path::new(&path)).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -399,7 +486,9 @@ pub fn request_microphone() {
 #[tauri::command(async)]
 pub fn download_model(shared: State<'_, Arc<Shared>>, model: String) -> Result<(), String> {
     let mut cfg = shared.cfg();
-    cfg.model = model;
+    cfg.stt_engine = if model::PARAKEET_MODELS.iter().any(|m| m.0 == model) { "parakeet" } else { "whisper" }.into();
+    cfg.stt_model = model;
+    cfg.sync_stt_fields();
     config::save(&cfg).map_err(|e| e.to_string())?;
     *shared.cfg.write().unwrap() = cfg;
     let shared = shared.inner().clone();
@@ -517,6 +606,39 @@ pub fn assistant_history_clear(app: AppHandle) -> Result<(), String> {
     assistant::history::clear().map_err(|e| e.to_string())?;
     let _ = app.emit_to("main", "history-updated", ());
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command(async)]
+pub fn record_clone_sample(shared: State<'_, Arc<Shared>>, seconds: Option<u32>) -> Result<(), String> {
+    use crate::assistant::openvoice;
+    use crate::audio;
+    let secs = seconds.unwrap_or(20).clamp(10, 30);
+    let cfg = shared.cfg();
+    if !cfg.clone_consent {
+        return Err("Turn on voice cloning consent first".into());
+    }
+    if shared.sampling.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Already recording a sample".into());
+    }
+    let noop: audio::LevelFn = Box::new(|_| {});
+    let rec = shared
+        .recorder
+        .start(cfg.input_device.clone(), cfg.mic_processing(), noop)
+        .and_then(|_| {
+            std::thread::sleep(std::time::Duration::from_secs(secs as u64));
+            shared.recorder.stop()
+        });
+    shared.sampling.store(false, std::sync::atomic::Ordering::SeqCst);
+    let rec = rec.map_err(|e| e.to_string())?;
+    openvoice::save_reference(openvoice::DEFAULT_VOICE_ID, &rec.samples).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command(async)]
+pub fn clone_profile_ready() -> bool {
+    crate::assistant::openvoice::profile_ready(crate::assistant::openvoice::DEFAULT_VOICE_ID)
 }
 
 #[cfg(target_os = "macos")]

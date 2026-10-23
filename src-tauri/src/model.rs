@@ -8,6 +8,24 @@ use std::path::{Path, PathBuf};
 
 const WHISPER_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+/// NeMo Parakeet TDT 0.6B v3, INT8 ONNX export in the layout transcribe-rs loads.
+const PARAKEET_V3_URL: &str = "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main";
+/// Files in a Parakeet bundle, with rough sizes (bytes) for the progress bar.
+const PARAKEET_FILES: [(&str, u64); 4] = [
+    ("encoder-model.int8.onnx", 652_000_000),
+    ("decoder_joint-model.int8.onnx", 18_000_000),
+    ("nemo128.onnx", 140_000),
+    ("vocab.txt", 94_000),
+];
+
+/// Parakeet bundle id → (label, size_mb, note)
+pub const PARAKEET_MODELS: [(&str, &str, u32, &str); 1] = [(
+    "tdt-0.6b-v3",
+    "Parakeet TDT 0.6B v3",
+    670,
+    "Very fast, 25 European languages (auto-detected), no translate. One-time download (~670 MB).",
+)];
+
 /// A built-in AI model the assistant can run.
 #[derive(serde::Serialize)]
 pub struct BrainModel {
@@ -146,6 +164,26 @@ pub fn ram_gb() -> u32 {
 
 pub fn model_path(dir: &Path, model: &str) -> PathBuf {
     dir.join("models").join(format!("ggml-{model}.bin"))
+}
+
+pub fn parakeet_dir(dir: &Path, id: &str) -> PathBuf {
+    dir.join("models").join("parakeet").join(id)
+}
+
+pub fn parakeet_ready(dir: &Path, id: &str) -> bool {
+    let d = parakeet_dir(dir, id);
+    PARAKEET_FILES.iter().all(|(f, _)| d.join(f).exists())
+}
+
+/// Each file downloads through a `.part`, so a half-finished bundle never counts as ready.
+pub fn ensure_parakeet(dir: &Path, id: &str, progress: impl Fn(u64, u64)) -> Result<PathBuf> {
+    let d = parakeet_dir(dir, id);
+    let files: Vec<_> = PARAKEET_FILES
+        .iter()
+        .map(|(f, size)| (format!("parakeet/{id}/{f}"), format!("{PARAKEET_V3_URL}/{f}"), *size))
+        .collect();
+    download_all(dir, &files, progress)?;
+    Ok(d)
 }
 
 pub fn brain_path(dir: &Path, id: &str) -> PathBuf {

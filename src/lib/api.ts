@@ -22,13 +22,22 @@ export interface Learning {
   to: string;
 }
 
+/** Dictation style for one app, matched on its bundle id. */
+export interface AppStyle {
+  bundle: string;
+  style: DictationStyle;
+  prompt: string;
+}
+
 export interface Config {
   /** Dictation key. */
   hotkey: string;
   /** Assistant key; must differ from `hotkey`. */
   assistant_hotkey: string;
-  /** Whisper model, shared by dictation and the assistant. */
+  /** Whisper model id (legacy; kept in sync with `stt_model` when engine is Whisper). */
   model: string;
+  stt_engine: "whisper" | "parakeet" | string;
+  stt_model: string;
   language: string;
   translate: boolean;
   input_device: string | null;
@@ -36,10 +45,15 @@ export interface Config {
   replacements: Replacement[];
   snippets: Snippet[];
   dictation_style: DictationStyle;
-  live_partials: boolean;
-  partial_interval_ms: number;
   learn_from_corrections: boolean;
   remove_fillers: boolean;
+  /** Polish dictation with the local AI (macOS). */
+  llm_cleanup: boolean;
+  app_styles: AppStyle[];
+  /** Command-mode key (macOS); "" = off. */
+  command_hotkey: string;
+  /** Keep each dictation's audio for replay / re-transcribe. */
+  keep_audio: boolean;
   noise_suppression: boolean;
   echo_cancellation: boolean;
   restore_clipboard: boolean;
@@ -61,7 +75,13 @@ export interface Config {
   voice: string;
   speech_rate: number;
   /** "system" (macOS voices) or "natural" (Kokoro, an AI voice that runs on the Mac). */
-  voice_engine: "system" | "natural";
+  voice_engine: "system" | "natural" | "cloned";
+  cloned_voice_id: string | null;
+  clone_consent: boolean;
+  http_enabled: boolean;
+  http_port: number;
+  http_token: string;
+  mcp_enabled: boolean;
   /** Natural voice's speaker: "af_heart", "bm_george", … */
   natural_voice: string;
   speak_replies: boolean;
@@ -114,6 +134,7 @@ export interface ModelInfo {
   size_mb: number;
   note: string;
   downloaded: boolean;
+  engine: "whisper" | "parakeet" | string;
 }
 
 export type DownloadKey = "speech" | "brain" | "natural";
@@ -143,6 +164,10 @@ export interface Entry {
   raw: string;
   audio_seconds: number;
   transcribe_ms: number;
+  /** Bundle id of the app dictated into ("" if unknown or a file). */
+  app: string;
+  /** Kept audio file name ("" if not kept). */
+  audio: string;
 }
 
 /** A question to the assistant and its answer. */
@@ -194,6 +219,11 @@ export const api = {
   suggestLearnings: (time: string, newText: string) => invoke<Learning[]>("history_suggest_learnings", { time, newText }),
   applyLearnings: (learnings: Learning[]) => invoke<void>("apply_learnings", { learnings }),
   clearHistory: () => invoke<void>("history_clear"),
+  retranscribe: (time: string) => invoke<Entry>("history_retranscribe", { time }),
+  playAudio: (time: string) => invoke<void>("history_play_audio", { time }),
+  exportHistory: (format: "md" | "csv") => invoke<string>("history_export", { format }),
+  recentApps: () => invoke<string[]>("recent_apps"),
+  transcribeFile: (path: string) => invoke<string>("transcribe_file", { path }),
   stats: () => invoke<Stats>("get_stats"),
   copy: (text: string) => invoke<void>("copy_text", { text }),
   setLogin: (enabled: boolean) => invoke<boolean>("set_login", { enabled }),
@@ -212,6 +242,8 @@ export const api = {
   downloadBrain: () => invoke<void>("download_brain"),
   downloadVoice: () => invoke<void>("download_voice"),
   previewVoice: (engine: Config["voice_engine"], voice: string, rate: number) => invoke<void>("preview_voice", { engine, voice, rate }),
+  recordCloneSample: (seconds?: number) => invoke<void>("record_clone_sample", { seconds }),
+  cloneProfileReady: () => invoke<boolean>("clone_profile_ready"),
   stop: () => invoke<void>("stop_speaking"),
   ask: (question: string) => invoke<void>("ask_text", { question }),
   newConversation: () => invoke<void>("new_conversation"),

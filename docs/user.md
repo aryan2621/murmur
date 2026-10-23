@@ -50,6 +50,14 @@ Without it, Murmur falls back to listening only (needs **Input Monitoring**); in
 - A quick single tap of Fn does nothing (no emoji picker, no widget).
 - Pressing another key while holding Fn (e.g. Fn+F5, Fn+←) cancels, so normal Fn shortcuts still work.
 - Your clipboard (text, images, files) is restored right after each paste.
+- **Command mode** (macOS, optional): select text, hold the command key (Settings → Shortcuts) and
+  say how to change it: *"make this shorter"*, *"turn into bullet points"*, *"translate to Hindi"*.
+  The local AI rewrites it in place. With nothing selected it writes what you ask for.
+- **Audio files:** drop a WAV, MP3, M4A or other audio file on the History page to transcribe it
+  (Windows: WAV only). The text is saved to History.
+- With **Keep dictation audio** on, each History entry can be replayed or transcribed again with
+  your current model and style.
+- History → **Export** writes everything to your Downloads folder as Markdown.
 - Menu bar mic icon: status, **Copy Last Dictation** (if a paste missed), **New Conversation**,
   history, settings, **Open Log**, **Start at Login**, quit.
 
@@ -122,13 +130,21 @@ the background). They are stored in `~/Library/Application Support/Murmur/config
 | Setting | Default | Notes |
 |---|---|---|
 | Dictation key (`hotkey`) | `fn` | macOS: `fn`, `right_option`, `right_command`, `right_control`, `right_shift`. Windows: `right_ctrl`, `right_alt`, `caps_lock` |
-| Model (`model`) | `large-v3-turbo-q5_0` | Also `large-v3-turbo`, `large-v3-q5_0`, `small`, `small.en`, `base.en`, `tiny.en` |
+| Speech engine (`stt_engine`) | `whisper` | `parakeet` (macOS): Parakeet TDT 0.6B v3, very fast, 25 European languages, no translate; ~670 MB download |
+| Model (`stt_model`) | `large-v3-turbo-q5_0` | Whisper: also `large-v3-turbo`, `large-v3-q5_0`, `small`, `small.en`, `base.en`, `tiny.en`. Parakeet: `tdt-0.6b-v3` |
 | Language (`language`) | `en` | `auto` or a code like `hi` |
 | Translate to English (`translate`) | off | Needs a model with translate support (Large v3, Small multilingual) |
 | Input device (`input_device`) | system default | Falls back to the default if the mic is disconnected |
 | Remove filler words (`remove_fillers`) | on | um/uh, stutters, set-off "you know"/"I mean"; also writes times as `10:30` |
 | Vocabulary (`vocabulary`) | — | Names/jargon to spell correctly |
 | Replacements (`replacements`) | — | `[{"from": "acme corp", "to": "Acme Corp"}]`, whole words, any case |
+| Snippets (`snippets`) | — | Say a trigger like `;;sig` to expand it into longer text |
+| Dictation style (`dictation_style`) | `clean` | `verbatim`, `message`, `email`, `code` |
+| Per-app styles (`app_styles`) | — | `[{"bundle": "com.tinyspeck.slackmacgap", "style": "message", "prompt": ""}]`; `prompt` adds AI instructions for that app |
+| Polish with local AI (`llm_cleanup`) | off | macOS: runs each dictation through the assistant's AI (built-in or Ollama) to fix grammar and misheard words. Gives up after 5 s and types the plain text; skipped for very long dictations |
+| Command key (`command_hotkey`) | off | macOS: key for command mode; must differ from the other keys |
+| Learn from History edits (`learn_from_corrections`) | on | Offers to save your fixes as replacements or vocabulary |
+| Keep dictation audio (`keep_audio`) | off | WAVs in `audio/`, deleted with their History entry |
 | Sounds (`sounds`) | on | Soft start/stop tones |
 | Restore clipboard (`restore_clipboard`) | on | Text, images and files are put back after pasting |
 | Save history (`save_history`) | on | `history.jsonl`, local only |
@@ -160,6 +176,20 @@ Assistant (macOS):
 | `location` | empty | City for the weather; empty = guessed from your connection |
 
 History is kept in `history.jsonl` (dictations) and `assistant-history.jsonl` (questions and answers).
+
+### For agents: local HTTP API and MCP (macOS)
+
+Settings → Advanced (agents) → **Local HTTP API** listens on `127.0.0.1:8765` (`http_port`).
+Switching it on generates a token (`http_token`); every request needs
+`Authorization: Bearer <token>`, and requests whose `Host` isn't `127.0.0.1`/`localhost` are
+refused. Endpoints: `GET /v1/status`, `GET /v1/last-dictation`, `POST /v1/ask {"question"}`,
+`POST /v1/speak {"text"}`, `POST /v1/stop`.
+
+**MCP:** turn on **Cursor MCP** too, then add `"command": "/Applications/Murmur.app/Contents/MacOS/murmur", "args": ["--mcp"]`
+to your MCP client. It talks to the HTTP API, so that must be on and Murmur running.
+
+The **Custom clone** voice is experimental: it records a sample, but this build has no cloning
+model wired up yet, so it speaks with the macOS voice.
 
 ## Troubleshooting
 

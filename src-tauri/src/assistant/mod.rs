@@ -7,6 +7,7 @@ mod duck;
 pub mod history;
 pub mod kokoro;
 pub mod llm;
+pub mod openvoice;
 mod player;
 pub mod speech;
 

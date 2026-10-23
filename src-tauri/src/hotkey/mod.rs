@@ -15,6 +15,8 @@ pub enum HotkeyEvent {
 pub enum Hotkey {
     Dictation,
     Assistant,
+    /// Command mode (macOS): rewrite the selection by voice.
+    Command,
 }
 
 /// Returns true when the event was consumed (lets the listener swallow Esc while recording).

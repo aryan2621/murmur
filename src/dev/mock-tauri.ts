@@ -24,7 +24,7 @@ function makeHistory(): Entry[] {
     d.setHours(9 + Math.floor(rand() * 10), Math.floor(rand() * 60));
     const text = SAMPLE[Math.floor(rand() * SAMPLE.length)];
     const secs = Math.max(1, text.split(" ").length / 2.6 + rand() * 6);
-    out.push({ time: d.toISOString(), text, raw: text, audio_seconds: secs, transcribe_ms: Math.round(780 + secs * 28 + rand() * 120) });
+    out.push({ time: d.toISOString(), text, raw: text, audio_seconds: secs, transcribe_ms: Math.round(780 + secs * 28 + rand() * 120), app: "", audio: "" });
   }
   return out.sort((a, b) => b.time.localeCompare(a.time));
 }
@@ -62,19 +62,22 @@ const history = makeHistory();
 const exchanges = makeExchanges();
 let notes = "Ideas for the offsite:\n- team dinner on Thursday\n- one hour for demos";
 let config: Config = {
-  hotkey: "fn", model: "large-v3-turbo-q5_0", language: "en", translate: false, input_device: null, noise_suppression: true, echo_cancellation: true,
+  hotkey: "fn", model: "large-v3-turbo-q5_0", stt_engine: "whisper", stt_model: "large-v3-turbo-q5_0",
+  language: "en", translate: false, input_device: null, noise_suppression: true, echo_cancellation: true,
   vocabulary: ["Acme Corp", "Kubernetes"], replacements: [{ from: "acme corp", to: "Acme Corp" }],
   snippets: [{ trigger: ";;sig", text: "Best,\nDemo User", mode: "suffix" }],
-  dictation_style: "clean", live_partials: true, partial_interval_ms: 900, learn_from_corrections: true,
-  remove_fillers: true,
+  dictation_style: "clean", learn_from_corrections: true,
+  remove_fillers: true, llm_cleanup: false, app_styles: [], command_hotkey: "", keep_audio: false,
   restore_clipboard: true, save_history: true, sounds: true, unload_after_minutes: 0,
   // `?setup` in the URL previews the first-run setup (`?setup=2` opens a step).
   setup_done: !new URLSearchParams(location.search).has("setup"),
   assistant_hotkey: "right_option", assistant_enabled: true,
   brain: "builtin", builtin_model: "8b", ollama_url: "http://localhost:11434", llm_model: "qwen3:8b", keep_alive: "30m", system_prompt: null,
-  assistant_name: "Jarvis", voice: "Tara", speech_rate: 195, voice_engine: "system", natural_voice: "af_heart", speak_replies: true,
+  assistant_name: "Jarvis", voice: "Tara", speech_rate: 195, voice_engine: "system", natural_voice: "af_heart", cloned_voice_id: null, clone_consent: false,
+  speak_replies: true,
   forget_after_minutes: 5, history_turns: 8, pause_seconds: 1.2, conversation_timeout_seconds: 20,
   speech_threshold: 0.012, actions: true, web_access: true, location: "",
+  http_enabled: false, http_port: 8765, http_token: "", mcp_enabled: false,
 };
 const mockStep = new URLSearchParams(location.search).get("setup");
 if (mockStep) localStorage.setItem("murmur.setupStep", mockStep);
@@ -104,9 +107,10 @@ const state = (): AppState => ({
   },
   permissions: fresh ? { accessibility: true, microphone: "not_asked" } : { accessibility: true, microphone: "granted" },
   models: [
-    { id: "large-v3-turbo-q5_0", label: "Large v3 Turbo", size_mb: 547, note: "Recommended: best accuracy for its speed.", downloaded: !fresh },
-    { id: "small", label: "Small (multilingual)", size_mb: 466, note: "Fast; good for Hindi and translate.", downloaded: false },
-    { id: "base.en", label: "Base (English)", size_mb: 142, note: "Very fast, less accurate.", downloaded: false },
+    { id: "large-v3-turbo-q5_0", label: "Large v3 Turbo", size_mb: 547, note: "Recommended: best accuracy for its speed.", downloaded: !fresh, engine: "whisper" },
+    { id: "small", label: "Small (multilingual)", size_mb: 466, note: "Fast; good for Hindi and translate.", downloaded: false, engine: "whisper" },
+    { id: "base.en", label: "Base (English)", size_mb: 142, note: "Very fast, less accurate.", downloaded: false, engine: "whisper" },
+    { id: "tdt-0.6b-v3", label: "Parakeet TDT 0.6B v3", size_mb: 670, note: "Very fast, 25 European languages.", downloaded: false, engine: "parakeet" },
   ],
   devices: ["MacBook Pro Microphone", "AirPods Pro"],
   hotkeys: [{ id: "fn", label: "Fn / 🌐" }, { id: "right_option", label: "Right Option ⌥" }, { id: "right_command", label: "Right Command ⌘" }],
@@ -144,6 +148,10 @@ const handlers: Record<string, (a: any) => unknown> = {
   save_notes: (a) => void (notes = a.text),
   set_login: (a) => a.enabled,
   finish_setup: () => void (config = { ...config, setup_done: true }),
+  record_clone_sample: () => new Promise((r) => setTimeout(r, 1500)),
+  clone_profile_ready: () => false,
+  recent_apps: () => ["com.tinyspeck.slackmacgap", "com.apple.mail"],
+  history_export: () => "~/Downloads/Murmur history.md",
   "plugin:event|listen": () => Math.floor(Math.random() * 1e6),
   "plugin:event|unlisten": () => null,
 };

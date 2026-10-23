@@ -21,6 +21,21 @@ pub fn insert(text: &str, restore_clipboard: bool) -> Result<()> {
     Ok(())
 }
 
+/// The text selected in the app in front, copied with ⌘C; the clipboard is put back after.
+#[cfg(target_os = "macos")]
+pub fn selected_text() -> Option<String> {
+    let snapshot = clipboard::snapshot();
+    let before = clipboard::change_count();
+    platform::send_shortcut(platform::KEY_C);
+    sleep(Duration::from_millis(150));
+    // Nothing selected: ⌘C leaves the clipboard alone.
+    let text = (clipboard::change_count() != before).then(clipboard::text).flatten();
+    if let Some(snapshot) = snapshot {
+        clipboard::restore(snapshot, clipboard::change_count());
+    }
+    text
+}
+
 /// Puts text on the clipboard without pasting (tray "Copy Last Dictation").
 pub fn copy(text: &str) -> Result<()> {
     clipboard::set_text(text).map(|_| ())
@@ -61,6 +76,14 @@ mod clipboard {
             return Err(anyhow!("could not write to the clipboard"));
         }
         Ok(pb.changeCount())
+    }
+
+    pub fn change_count() -> isize {
+        NSPasteboard::generalPasteboard().changeCount()
+    }
+
+    pub fn text() -> Option<String> {
+        NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
     }
 
     /// Restores the snapshot unless something else changed the clipboard since we wrote it.
@@ -142,12 +165,18 @@ mod platform {
     const HID_EVENT_TAP: u32 = 0;
     const FLAG_COMMAND: u64 = 0x0010_0000;
     const KEY_V: u16 = 9;
+    pub const KEY_C: u16 = 8;
 
     pub fn send_paste_shortcut() {
+        send_shortcut(KEY_V)
+    }
+
+    /// ⌘ + the key with this virtual keycode.
+    pub fn send_shortcut(key: u16) {
         unsafe {
             let source = CGEventSourceCreate(HID_SYSTEM_STATE);
             for down in [true, false] {
-                let ev = CGEventCreateKeyboardEvent(source, KEY_V, down);
+                let ev = CGEventCreateKeyboardEvent(source, key, down);
                 CGEventSetFlags(ev, FLAG_COMMAND);
                 CGEventPost(HID_EVENT_TAP, ev);
                 CFRelease(ev);

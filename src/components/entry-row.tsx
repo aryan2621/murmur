@@ -1,4 +1,4 @@
-import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
+import { Check, Copy, Loader2, Pencil, Play, RotateCcw, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -26,6 +26,7 @@ export function EntryRow({ entry, onDeleted, onUpdated }: { entry: Entry; onDele
   const [learnings, setLearnings] = useState<Learning[]>([]);
   const [picked, setPicked] = useState<Record<number, boolean>>({});
   const [learnOpen, setLearnOpen] = useState(false);
+  const [redoing, setRedoing] = useState(false);
 
   const time = new Date(entry.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const meta = [`${wordCount(entry.text)} words`, entry.audio_seconds ? `${Math.round(entry.audio_seconds)} s` : null].filter(Boolean);
@@ -58,6 +59,19 @@ export function EntryRow({ entry, onDeleted, onUpdated }: { entry: Entry; onDele
       toast.error(`Couldn't save: ${e}`);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function retranscribe() {
+    setRedoing(true);
+    try {
+      await api.retranscribe(entry.time);
+      toast("Transcribed again with your current settings");
+      onUpdated?.();
+    } catch (e) {
+      toast.error(`Couldn't transcribe: ${e}`);
+    } finally {
+      setRedoing(false);
     }
   }
 
@@ -116,6 +130,26 @@ export function EntryRow({ entry, onDeleted, onUpdated }: { entry: Entry; onDele
             </>
           ) : (
             <>
+              {entry.audio && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label="Play audio" onClick={() => api.playAudio(entry.time).catch((e) => toast.error(String(e)))}>
+                        <Play />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Play audio</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label="Transcribe again" disabled={redoing} onClick={() => void retranscribe()}>
+                        {redoing ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Transcribe again</TooltipContent>
+                  </Tooltip>
+                </>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button variant="ghost" size="icon-sm" aria-label="Edit" onClick={() => setEditing(true)}>

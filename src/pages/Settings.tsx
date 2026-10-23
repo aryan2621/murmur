@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Panel } from "@/components/bits";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { api, type Config, type Replacement, type Snippet, type Voice } from "@/lib/api";
+import { api, type AppStyle, type Config, type DictationStyle, type Replacement, type Snippet, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
 import { useBusy } from "@/hooks/use-busy";
 
@@ -118,6 +118,14 @@ function navGroups(assistant: string | null): { label: string; items: NavItem[] 
   ];
 }
 
+const STYLES: [DictationStyle, string][] = [
+  ["clean", "Clean (default)"],
+  ["verbatim", "Verbatim"],
+  ["message", "Message"],
+  ["email", "Email"],
+  ["code", "Code"],
+];
+
 /** Settings in a dialog, like Claude's: sections on the left, the chosen one on the right. */
 export default function SettingsDialog({ app, open, onOpenChange, pane, onPaneChange, onRunSetup }: { app: ReturnType<typeof useAppState>; open: boolean; onOpenChange: (open: boolean) => void; pane: Pane; onPaneChange: (pane: Pane) => void; onRunSetup: () => void }) {
   return (
@@ -134,6 +142,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const [vocab, setVocab] = useState("");
   const [repl, setRepl] = useState<Replacement[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [appStyles, setAppStyles] = useState<AppStyle[]>([]);
+  const [recentApps, setRecentApps] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [location, setLocation] = useState("");
@@ -160,6 +170,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       setVocab(state.config.vocabulary.join("\n"));
       setRepl(state.config.replacements);
       setSnippets(state.config.snippets ?? []);
+      setAppStyles(state.config.app_styles ?? []);
+      api.recentApps().then(setRecentApps, () => {});
       setName(state.config.assistant_name);
       setPrompt(state.config.system_prompt ?? "");
       setLocation(state.config.location);
@@ -171,7 +183,10 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   if (!state) return null;
   const c = state.config;
   const a = state.assistant;
-  const model = state.models.find((m) => m.id === c.model);
+  const sttModelId = c.stt_model || c.model;
+  const sttEngine = c.stt_engine || "whisper";
+  const speechModels = state.models.filter((m) => m.engine === sttEngine);
+  const model = state.models.find((m) => m.id === sttModelId);
   const llmModels = !a ? [] : a.ollama.models.includes(c.llm_model) ? a.ollama.models : [c.llm_model, ...a.ollama.models];
 
   async function save(patch: Partial<Config>) {
@@ -203,6 +218,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     await saveQueue.current;
   }
 
+  const saveAppStyles = (list: AppStyle[]) => save({ app_styles: list.filter((x) => x.bundle.trim()) });
   const saveRepl = (list: Replacement[]) => save({ replacements: list.filter((r) => r.from.trim()) });
   const saveSnippets = (list: Snippet[]) =>
     save({ snippets: list.filter((s) => s.trigger.trim() && s.text.trim()).map((s) => ({ ...s, mode: s.mode || "suffix" })) });
@@ -245,20 +261,51 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 </Select>
               </Row>
             )}
+            {a && (
+              <Row id="command-key" title="Command key" description="Select text, hold this key and say how to change it (“make it shorter”, “translate to Hindi”). With nothing selected it writes what you ask for. Uses the local AI.">
+                <Select value={c.command_hotkey || "off"} onValueChange={(v) => save({ command_hotkey: v === "off" ? "" : v })}>
+                  <SelectTrigger id="command-key" className="w-52"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off">Off</SelectItem>
+                    {state.hotkeys.map((h) => (
+                      <SelectItem key={h.id} value={h.id} disabled={h.id === c.hotkey || (c.assistant_enabled && h.id === c.assistant_hotkey)}>{h.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Row>
+            )}
           </Section>
     ),
     speech: (
       <>
           <Section title="Speech">
+            <Row id="stt-engine" title="Speech engine" description="Whisper for the most languages and translate mode; Parakeet is several times faster (25 European languages).">
+              <Select
+                value={sttEngine}
+                onValueChange={(v) => {
+                  const first = state.models.find((m) => m.engine === v);
+                  save({ stt_engine: v, stt_model: first?.id ?? sttModelId, model: first?.id ?? c.model });
+                }}
+              >
+                <SelectTrigger id="stt-engine" className="w-52"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="whisper">Whisper</SelectItem>
+                  {state.models.some((m) => m.engine === "parakeet") && <SelectItem value="parakeet">Parakeet</SelectItem>}
+                </SelectContent>
+              </Select>
+            </Row>
             <Row
               id="model"
               title="Model"
               description={<>{model?.note} {model && !model.downloaded && `Downloads ${formatSize(model.size_mb)} once.`}</>}
             >
-              <Select value={c.model} onValueChange={(v) => save({ model: v })}>
+              <Select
+                value={sttModelId}
+                onValueChange={(v) => save({ stt_model: v, model: sttEngine === "whisper" ? v : c.model })}
+              >
                 <SelectTrigger id="model" className="w-72"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {state.models.map((m) => (
+                  {speechModels.map((m) => (
                     <SelectItem key={m.id} value={m.id}>
                       <span>{m.label}</span>
                       <span className="text-muted-foreground">{formatSize(m.size_mb)}</span>
@@ -308,19 +355,78 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     text: (
           <Section>
             <Row id="style" title="Dictation style" description="How your words are tidied before they are typed. All styles run on your Mac.">
-              <Select value={c.dictation_style ?? "clean"} onValueChange={(v) => save({ dictation_style: v as Config["dictation_style"] })}>
+              <Select value={c.dictation_style ?? "clean"} onValueChange={(v) => save({ dictation_style: v as DictationStyle })}>
                 <SelectTrigger id="style" className="w-52"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="clean">Clean (default)</SelectItem>
-                  <SelectItem value="verbatim">Verbatim</SelectItem>
-                  <SelectItem value="message">Message</SelectItem>
-                  <SelectItem value="email">Email</SelectItem>
-                  <SelectItem value="code">Code</SelectItem>
+                  {STYLES.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </Row>
-            <Row id="live-partials" title="Live preview while dictating" description="Shows words in the floating pill as you speak. Uses extra CPU with large speech models.">
-              <Switch id="live-partials" checked={c.live_partials ?? true} onCheckedChange={(v) => save({ live_partials: v })} />
+            {a && (
+              <Row
+                id="llm-cleanup"
+                title="Polish with local AI"
+                description={`Fixes grammar, punctuation and misheard words with ${c.brain === "ollama" ? "your Ollama model" : "the built-in AI"} before typing. Adds about a second.${c.brain !== "ollama" && !a.brain_ready ? " Download the AI under Assistant first." : ""}`}
+              >
+                <Switch id="llm-cleanup" checked={c.llm_cleanup ?? false} onCheckedChange={(v) => save({ llm_cleanup: v })} />
+              </Row>
+            )}
+            <Row stack title="Per-app styles" description="Use a different style in particular apps (matched by bundle id). With the local AI on, add instructions too.">
+              <div className="flex flex-col gap-2">
+                <datalist id="recent-apps">
+                  {recentApps.map((b) => <option key={b} value={b} />)}
+                </datalist>
+                {appStyles.map((x, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={x.bundle}
+                      list="recent-apps"
+                      placeholder="com.tinyspeck.slackmacgap"
+                      className="w-60"
+                      onChange={(e) => setAppStyles(appStyles.map((y, j) => (j === i ? { ...y, bundle: e.target.value } : y)))}
+                      onBlur={() => saveAppStyles(appStyles)}
+                    />
+                    <Select
+                      value={x.style}
+                      onValueChange={(v) => {
+                        const next = appStyles.map((y, j) => (j === i ? { ...y, style: v as DictationStyle } : y));
+                        setAppStyles(next);
+                        saveAppStyles(next);
+                      }}
+                    >
+                      <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {STYLES.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    {a && (
+                      <Input
+                        value={x.prompt}
+                        placeholder="AI instructions (optional)"
+                        onChange={(e) => setAppStyles(appStyles.map((y, j) => (j === i ? { ...y, prompt: e.target.value } : y)))}
+                        onBlur={() => saveAppStyles(appStyles)}
+                      />
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Remove app style"
+                      onClick={() => {
+                        const next = appStyles.filter((_, j) => j !== i);
+                        setAppStyles(next);
+                        saveAppStyles(next);
+                      }}
+                    >
+                      <X />
+                    </Button>
+                  </div>
+                ))}
+                <div>
+                  <Button variant="outline" size="sm" onClick={() => setAppStyles([...appStyles, { bundle: recentApps.find((b) => !appStyles.some((x) => x.bundle === b)) ?? "", style: "message", prompt: "" }])}>
+                    <Plus /> Add app
+                  </Button>
+                </div>
+              </div>
             </Row>
             <Row id="learn" title="Learn from History edits" description="When you fix a dictation in History, offer to save replacements or vocabulary.">
               <Switch id="learn" checked={c.learn_from_corrections ?? true} onCheckedChange={(v) => save({ learn_from_corrections: v })} />
@@ -560,6 +666,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                   options={[
                     ["system", "macOS voices"],
                     ["natural", "Natural (AI)"],
+                    ["cloned", "Custom clone (experimental)"],
                   ]}
                   onChange={(v) => save({ voice_engine: v })}
                 />
@@ -589,6 +696,23 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 </Row>
                 <Row id="rate" title="Speed" description="How fast answers are spoken.">
                   <Choice id="rate" className="w-44" value={c.speech_rate} options={RATES} format={(v) => `${v} wpm`} onChange={(v) => save({ speech_rate: v })} />
+                </Row>
+              </>
+            ) : c.voice_engine === "cloned" ? (
+              <>
+                <Row id="clone-consent" title="Voice cloning" description="Only clone your own voice or with permission. Processing stays on this Mac.">
+                  <Switch id="clone-consent" checked={c.clone_consent ?? false} onCheckedChange={(v) => save({ clone_consent: v })} />
+                </Row>
+                <Row id="clone-record" title="Record sample" description="Speak naturally for about 20 seconds in a quiet room.">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!c.clone_consent || busy !== null}
+                    onClick={() => run("clone", () => api.recordCloneSample(20), "Couldn't save the sample: ")}
+                  >
+                    {busy === "clone" ? <Loader2 className="animate-spin" /> : null}
+                    Record 20 s
+                  </Button>
                 </Row>
               </>
             ) : (
@@ -670,10 +794,16 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
           </Section>
     ),
     privacy: (
+          <>
           <Section>
             <Row id="history" title="Save history" description="Keep a searchable log of dictations and questions on this Mac. Speech, the AI and the voice all run locally.">
               <Switch id="history" checked={c.save_history} onCheckedChange={(v) => save({ save_history: v })} />
             </Row>
+            {c.save_history && (
+              <Row id="keep-audio" title="Keep dictation audio" description="Saves each recording on this Mac so you can replay it or transcribe it again from History.">
+                <Switch id="keep-audio" checked={c.keep_audio ?? false} onCheckedChange={(v) => save({ keep_audio: v })} />
+              </Row>
+            )}
             <Row id="unload" title="Free memory when idle" description="Unloads the speech model (~700 MB) after a while; it reloads as you start speaking.">
               <Select value={String(c.unload_after_minutes)} onValueChange={(v) => save({ unload_after_minutes: Number(v) })}>
                 <SelectTrigger id="unload" className="w-44"><SelectValue /></SelectTrigger>
@@ -687,6 +817,37 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               </Select>
             </Row>
           </Section>
+          <Section title="Advanced (agents)">
+            <Row id="http" title="Local HTTP API" description="127.0.0.1 only — for scripts and `murmur --mcp` in Cursor.">
+              <Switch id="http" checked={c.http_enabled ?? false} onCheckedChange={(v) => save({ http_enabled: v, http_token: c.http_token || crypto.randomUUID() })} />
+            </Row>
+            {c.http_enabled && (
+              <>
+                <Row id="http-port" title="Port" description="Default 8765.">
+                  <Input
+                    id="http-port"
+                    className="w-28"
+                    type="number"
+                    defaultValue={c.http_port ?? 8765}
+                    onBlur={(e) => save({ http_port: Number(e.target.value) || 8765 })}
+                  />
+                </Row>
+                <Row id="http-token" title="Bearer token" description="Send as Authorization: Bearer <token>. Required.">
+                  <Input
+                    id="http-token"
+                    className="w-72"
+                    value={c.http_token ?? ""}
+                    data-selectable
+                    onChange={(e) => save({ http_token: e.target.value || crypto.randomUUID() })}
+                  />
+                </Row>
+              </>
+            )}
+            <Row title="Cursor MCP" description={<span data-selectable>{`Add to mcp.json: "command": "/path/to/Murmur.app/.../murmur", "args": ["--mcp"]`}</span>}>
+              <Switch id="mcp" checked={c.mcp_enabled ?? false} onCheckedChange={(v) => save({ mcp_enabled: v })} />
+            </Row>
+          </Section>
+          </>
     ),
     about: (
           <Section>
