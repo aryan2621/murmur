@@ -188,8 +188,15 @@ refused. Endpoints: `GET /v1/status`, `GET /v1/last-dictation`, `POST /v1/ask {"
 **MCP:** turn on **Cursor MCP** too, then add `"command": "/Applications/Murmur.app/Contents/MacOS/murmur", "args": ["--mcp"]`
 to your MCP client. It talks to the HTTP API, so that must be on and Murmur running.
 
-The **Custom clone** voice is experimental: it records a sample, but this build has no cloning
-model wired up yet, so it speaks with the macOS voice.
+**Your own voice (Custom clone, experimental):** in **Settings → Voice**, pick **Custom clone**,
+choose an engine, install its Python package (`pip install chatterbox-tts`, `f5-tts`, or
+`openvoice-v2 melotts`), and record a 20-second sample. The engine loads once and stays loaded
+while the clone voice is selected. If it can't run, the assistant uses the macOS voice.
+
+**Memory:** say "remember that…" or "forget …", or edit **Remembered facts** in Settings. With
+**Learn about me** on, the assistant also notes lasting facts you mention (names, places,
+preferences). Each question gets the few facts most related to it. A small search model (~34 MB)
+downloads the first time memory is used. All of it stays on your Mac.
 
 ## Troubleshooting
 

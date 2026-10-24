@@ -614,7 +614,10 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             <Row id="forget" title="Memory" description="Follow-up questions remember the conversation until it goes quiet for this long.">
               <Choice id="forget" className="w-44" value={c.forget_after_minutes} options={FORGET} format={(v) => `${v} minutes`} onChange={(v) => save({ forget_after_minutes: v })} />
             </Row>
-            <Row stack id="facts" title="Remembered facts" description="Things you asked it to remember (“remember that…”). Used in every conversation. One per line.">
+            <Row id="auto-memory" title="Learn about me" description="After each answer, note lasting facts you mention (names, places, preferences). Stays on this Mac.">
+              <Switch id="auto-memory" checked={c.auto_memory ?? true} onCheckedChange={(v) => save({ auto_memory: v })} />
+            </Row>
+            <Row stack id="facts" title="Remembered facts" description="What it knows about you, from “remember that…” and what it learned. The most related ones go with each question. One per line.">
               <Textarea
                 id="facts"
                 rows={4}
@@ -714,6 +717,15 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               <>
                 <Row id="clone-consent" title="Voice cloning" description="Only clone your own voice or with permission. Processing stays on this Mac.">
                   <Switch id="clone-consent" checked={c.clone_consent ?? false} onCheckedChange={(v) => save({ clone_consent: v })} />
+                </Row>
+                <Row id="clone-engine" title="Cloning engine" description={<>Runs with Python on this Mac. Chatterbox: <code>pip install chatterbox-tts</code>; F5-TTS: <code>pip install f5-tts</code>; OpenVoice: <code>pip install openvoice-v2 melotts</code>.</>}>
+                  <Choice
+                    id="clone-engine"
+                    className="w-56"
+                    value={c.clone_engine ?? "chatterbox"}
+                    options={[["chatterbox", "Chatterbox (best, Hindi too)"], ["f5", "F5-TTS (English)"], ["openvoice", "OpenVoice (lightest)"]]}
+                    onChange={(v) => save({ clone_engine: v })}
+                  />
                 </Row>
                 <Row id="clone-record" title="Record sample" description="Speak naturally for about 20 seconds in a quiet room.">
                   <Button

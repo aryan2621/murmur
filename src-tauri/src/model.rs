@@ -139,6 +139,28 @@ fn download_all(dir: &Path, files: &[(String, String, u64)], progress: impl Fn(u
     Ok(())
 }
 
+/// Memory search's sentence embedder: bge-small-en-v1.5, int8 ONNX, with its WordPiece vocabulary.
+const EMBEDDER_BASE: &str = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main";
+const EMBEDDER_FILES: [(&str, &str, u64); 2] = [
+    ("bge-small-en-v1.5-int8.onnx", "onnx/model_quantized.onnx", 34_014_426),
+    ("bge-small-en-v1.5-vocab.txt", "vocab.txt", 231_508),
+];
+
+/// (model, vocabulary) paths of the memory search embedder.
+pub fn embedder_paths(dir: &Path) -> (PathBuf, PathBuf) {
+    (dir.join("models").join(EMBEDDER_FILES[0].0), dir.join("models").join(EMBEDDER_FILES[1].0))
+}
+
+pub fn embedder_ready(dir: &Path) -> bool {
+    let (model, vocab) = embedder_paths(dir);
+    model.exists() && vocab.exists()
+}
+
+pub fn ensure_embedder(dir: &Path) -> Result<()> {
+    let files: Vec<_> = EMBEDDER_FILES.iter().map(|(name, path, size)| (name.to_string(), format!("{EMBEDDER_BASE}/{path}"), *size)).collect();
+    download_all(dir, &files, |_, _| {})
+}
+
 /// The model with this id (the first one if it's unknown).
 pub fn brain(id: &str) -> &'static BrainModel {
     BRAINS.iter().find(|b| b.id == id).unwrap_or(&BRAINS[0])

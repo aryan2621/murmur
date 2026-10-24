@@ -79,11 +79,14 @@ pub struct Config {
     pub voice: String,
     /// Speaking rate in words per minute.
     pub speech_rate: u32,
-    /// "system" (the macOS voice above), "natural" (Kokoro), or "cloned" (OpenVoice sidecar).
+    /// "system" (the macOS voice above), "natural" (Kokoro), or "cloned" (the cloning sidecar).
     pub voice_engine: String,
     /// Active cloned voice profile id under `voices/` in the data dir.
     #[serde(default)]
     pub cloned_voice_id: Option<String>,
+    /// Voice cloning engine for "cloned": "chatterbox", "f5" or "openvoice".
+    #[serde(default = "default_clone_engine")]
+    pub clone_engine: String,
     /// User accepted the voice-cloning permission notice.
     #[serde(default)]
     pub clone_consent: bool,
@@ -93,6 +96,9 @@ pub struct Config {
     pub speak_replies: bool,
     /// Start a fresh conversation after this many minutes without a question.
     pub forget_after_minutes: u32,
+    /// Note lasting facts about the user from each exchange (Jarvis' long-term memory).
+    #[serde(default = "default_true")]
+    pub auto_memory: bool,
     /// How many recent question/answer pairs are sent back to the model as context.
     pub history_turns: usize,
     /// Conversation mode (tap the key): this much silence after you speak sends the question.
@@ -127,6 +133,14 @@ pub struct Config {
     /// Shown in Settings; MCP is started with `murmur --mcp` and proxies to HTTP.
     #[serde(default)]
     pub mcp_enabled: bool,
+}
+
+fn default_clone_engine() -> String {
+    "chatterbox".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_stt_engine() -> String {
@@ -205,11 +219,13 @@ impl Default for Config {
             speech_rate: 195,
             voice_engine: "system".into(),
             cloned_voice_id: None,
+            clone_engine: default_clone_engine(),
             clone_consent: false,
             natural_voice: "af_heart".into(),
             speak_replies: true,
             forget_after_minutes: 5,
             history_turns: 8,
+            auto_memory: true,
             pause_seconds: 1.2,
             conversation_timeout_seconds: 20,
             noise_suppression: true,

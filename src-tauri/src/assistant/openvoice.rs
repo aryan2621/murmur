@@ -1,4 +1,5 @@
-//! Optional OpenVoice sidecar for cloned assistant speech (MIT). Reference audio lives under
+//! Optional voice cloning sidecar (`openvoice/speak.py`) for the assistant's speech: Chatterbox,
+//! F5-TTS or OpenVoice, picked in Settings. Reference audio lives under
 //! `~/Library/Application Support/Murmur/voices/{id}/`.
 
 use anyhow::{anyhow, Context, Result};
@@ -56,10 +57,31 @@ struct Sidecar {
 }
 
 static SIDECAR: Mutex<Option<Sidecar>> = Mutex::new(None);
+/// The cloning engine chosen in Settings ("chatterbox", "f5", "openvoice").
+static ENGINE: Mutex<String> = Mutex::new(String::new());
+/// Once the sidecar says it can't run, stop spawning python3 for every sentence until the engine changes.
+static UNUSABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the cloning engine; the running sidecar is stopped if it was another one.
+pub fn set_engine(engine: &str) {
+    let mut current = ENGINE.lock().unwrap();
+    if *current != engine {
+        *current = engine.to_string();
+        drop(current);
+        UNUSABLE.store(false, std::sync::atomic::Ordering::Relaxed);
+        unload();
+    }
+}
+
+fn engine() -> String {
+    let e = ENGINE.lock().unwrap().clone();
+    if e.is_empty() { "chatterbox".into() } else { e }
+}
 
 fn spawn() -> Result<Sidecar> {
     let mut child = Command::new("python3")
         .arg(script_path()?)
+        .args(["--engine", &engine()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -100,10 +122,8 @@ pub fn unload() {
 
 /// Synthesize speech at 24 kHz mono for the shared `Player`.
 pub fn synthesize(text: &str, voice_id: &str) -> Result<Vec<f32>> {
-    // Once the sidecar says it can't run, stop spawning python3 for every sentence this session.
-    static UNUSABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if UNUSABLE.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(anyhow!("OpenVoice is not available"));
+        return Err(anyhow!("Voice cloning ({}) is not available", engine()));
     }
     let reference = reference_path(voice_id);
     if !reference.exists() {
@@ -118,18 +138,27 @@ pub fn synthesize(text: &str, voice_id: &str) -> Result<Vec<f32>> {
     match request(slot.as_mut().unwrap(), &req) {
         Ok(reply) => match reply["error"].as_str() {
             None => crate::audio::read_wav(&out, 24_000),
-            Some(e) => Err(anyhow!("OpenVoice: {e}")),
+            Some(e) => Err(anyhow!("Voice cloning: {e}")),
         },
         Err(code) => {
             *slot = None;
-            if matches!(code, Some(2 | 3)) {
+            if matches!(code, Some(2..=4)) {
                 UNUSABLE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             match code {
                 Some(3) => Err(anyhow!("OpenVoice checkpoints are missing: unzip checkpoints_v2 into Murmur/openvoice in Application Support")),
-                Some(2) => Err(anyhow!("Install OpenVoice for cloned speech: pip install openvoice-v2 melotts (see Settings → Voice)")),
-                code => Err(anyhow!("OpenVoice sidecar failed (exit {code:?})")),
+                Some(2) => Err(anyhow!("Install the voice cloning engine: {}", install_hint(&engine()))),
+                code => Err(anyhow!("Voice cloning sidecar failed (exit {code:?})")),
             }
         }
+    }
+}
+
+/// The pip command that installs `engine`, as `speak.py` lists them.
+pub fn install_hint(engine: &str) -> &'static str {
+    match engine {
+        "f5" => "pip install f5-tts",
+        "openvoice" => "pip install openvoice-v2 melotts",
+        _ => "pip install chatterbox-tts",
     }
 }

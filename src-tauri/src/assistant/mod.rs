@@ -7,6 +7,7 @@ mod duck;
 pub mod history;
 pub mod kokoro;
 pub mod llm;
+mod embedder;
 pub mod memory;
 pub mod openvoice;
 mod player;
@@ -835,7 +836,7 @@ impl Assistant {
 
     /// Recording → question → streamed answer, spoken sentence by sentence.
     /// Returns how long to keep the answer on screen afterwards.
-    fn respond(&self, turn: u64) -> anyhow::Result<Duration> {
+    fn respond(self: &Arc<Self>, turn: u64) -> anyhow::Result<Duration> {
         let mut rec = self.stop_mic()?;
         if rec.seconds() < MIN_SECONDS || rec.peak_rms < SILENCE_RMS {
             mlog!("skipped clip ({:.2}s, peak rms {:.4})", rec.seconds(), rec.peak_rms);
@@ -864,7 +865,7 @@ impl Assistant {
 
     /// Streams the model's answer to `question`, speaking it sentence by sentence, and logs it.
     /// Returns how long to keep the answer on screen afterwards.
-    fn answer(&self, turn: u64, question: &str, mode: &str, audio_seconds: f32, heard_ms: u64) -> anyhow::Result<Duration> {
+    fn answer(self: &Arc<Self>, turn: u64, question: &str, mode: &str, audio_seconds: f32, heard_ms: u64) -> anyhow::Result<Duration> {
         let cfg = self.cfg();
         self.emit_reply(turn, "thinking", question, "");
         let messages = self.messages_for(&cfg, question);
@@ -960,6 +961,10 @@ impl Assistant {
         let total_ms = t1.elapsed().as_millis() as u64;
         if !reply.trim().is_empty() && self.current(turn) {
             self.remember(turn, question, reply.trim(), steps);
+            if cfg.auto_memory {
+                let (core, question, reply) = (self.clone(), question.to_string(), reply.trim().to_string());
+                std::thread::spawn(move || memory::learn(&core.brain, &question, &reply));
+            }
             if cfg.save_history {
                 history::append(&history::Entry {
                     time: chrono::Local::now().to_rfc3339(),
@@ -1054,7 +1059,9 @@ impl Assistant {
         let skip = turns_start(&conv.messages, cfg.history_turns);
         let mut messages = vec![Message::system(system_prompt(cfg))];
         messages.extend(conv.messages[skip..].iter().cloned());
-        messages.push(Message::user(with_time(question)));
+        // Facts go with the question, not the system prompt, so the AI's read-ahead of the
+        // instructions stays valid.
+        messages.push(Message::user(with_time(&memory::with_facts(question))));
         messages
     }
 
@@ -1401,7 +1408,7 @@ pub fn system_prompt(cfg: &Config) -> String {
     });
     // No clock here: this part and the tool list stay the same from question to question, so
     // the AI can keep them read in advance. The time goes with each question instead.
-    format!("{base}{}\n\n{}", memory::prompt_section(), actions::instructions(cfg))
+    format!("{base}\n\n{}", actions::instructions(cfg))
 }
 
 /// Where the last `turns` exchanges begin, so a question is never kept without its actions

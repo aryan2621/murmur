@@ -80,6 +80,7 @@ pub struct Speaker {
 
 impl Speaker {
     pub fn new(cfg: &Config) -> Self {
+        crate::assistant::openvoice::set_engine(&cfg.clone_engine);
         let (tx, rx) = mpsc::channel::<Utterance>();
         let epoch = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(AtomicUsize::new(0));
@@ -103,6 +104,7 @@ impl Speaker {
     /// Switches voice / speed for everything said from now on, and frees the natural voice's
     /// memory when it's no longer used.
     pub fn configure(&self, cfg: &Config) {
+        crate::assistant::openvoice::set_engine(&cfg.clone_engine);
         let choice = VoiceChoice::from(cfg);
         let was = std::mem::replace(&mut *self.voice.lock().unwrap(), choice.clone()).engine;
         if was == Engine::Natural && choice.engine != Engine::Natural {

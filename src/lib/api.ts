@@ -77,6 +77,7 @@ export interface Config {
   /** "system" (macOS voices) or "natural" (Kokoro, an AI voice that runs on the Mac). */
   voice_engine: "system" | "natural" | "cloned";
   cloned_voice_id: string | null;
+  clone_engine?: "chatterbox" | "f5" | "openvoice";
   clone_consent: boolean;
   http_enabled: boolean;
   http_port: number;
@@ -86,6 +87,7 @@ export interface Config {
   natural_voice: string;
   speak_replies: boolean;
   forget_after_minutes: number;
+  auto_memory?: boolean;
   history_turns: number;
   pause_seconds: number;
   conversation_timeout_seconds: number;
