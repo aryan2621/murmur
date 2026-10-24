@@ -839,6 +839,8 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::assistant_history_page,
         commands::assistant_history_delete,
         commands::assistant_history_clear,
+        commands::assistant_memory_get,
+        commands::assistant_memory_save,
         commands::download_brain,
         commands::download_voice,
         commands::preview_voice,

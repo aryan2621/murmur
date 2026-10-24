@@ -7,6 +7,7 @@ mod duck;
 pub mod history;
 pub mod kokoro;
 pub mod llm;
+pub mod memory;
 pub mod openvoice;
 mod player;
 pub mod speech;
@@ -1400,7 +1401,7 @@ pub fn system_prompt(cfg: &Config) -> String {
     });
     // No clock here: this part and the tool list stay the same from question to question, so
     // the AI can keep them read in advance. The time goes with each question instead.
-    format!("{base}\n\n{}", actions::instructions(cfg))
+    format!("{base}{}\n\n{}", memory::prompt_section(), actions::instructions(cfg))
 }
 
 /// Where the last `turns` exchanges begin, so a question is never kept without its actions

@@ -146,6 +146,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const [recentApps, setRecentApps] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [facts, setFacts] = useState("");
   const [location, setLocation] = useState("");
   // A button's action (download, preview…) under way: the pane takes no clicks until it's done.
   const { busy, run } = useBusy();
@@ -174,6 +175,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       api.recentApps().then(setRecentApps, () => {});
       setName(state.config.assistant_name);
       setPrompt(state.config.system_prompt ?? "");
+      api.memory().then(setFacts, () => {});
       setLocation(state.config.location);
     }
   }, [state]);
@@ -611,6 +613,16 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             </Row>
             <Row id="forget" title="Memory" description="Follow-up questions remember the conversation until it goes quiet for this long.">
               <Choice id="forget" className="w-44" value={c.forget_after_minutes} options={FORGET} format={(v) => `${v} minutes`} onChange={(v) => save({ forget_after_minutes: v })} />
+            </Row>
+            <Row stack id="facts" title="Remembered facts" description="Things you asked it to remember (“remember that…”). Used in every conversation. One per line.">
+              <Textarea
+                id="facts"
+                rows={4}
+                value={facts}
+                placeholder={"My sister lives in Pune\nI prefer Celsius"}
+                onChange={(e) => setFacts(e.target.value)}
+                onBlur={() => api.saveMemory(facts).catch((e) => toast.error(String(e)))}
+              />
             </Row>
             <Row id="keep" title="Keep model loaded" description="Loading takes a few seconds; while loaded the 8B uses about 6 GB of memory (the 4B about 3 GB).">
               <Choice id="keep" className="w-44" value={c.keep_alive} options={KEEP_ALIVE} onChange={(v) => save({ keep_alive: v })} />

@@ -29,18 +29,22 @@ impl Whisper {
         vocabulary: &[String],
     ) -> Result<String> {
         let mut state = self.ctx.create_state()?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
         params.set_language(Some(language));
         params.set_translate(translate);
         params.set_n_threads(threads());
         params.set_no_context(true);
         params.set_no_timestamps(true);
         params.set_suppress_blank(true);
+        // Retry hotter when a segment looks like a loop or a guess instead of keeping it.
+        params.set_temperature_inc(0.2);
+        params.set_entropy_thold(2.4);
+        params.set_no_speech_thold(0.6);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        let prompt = format!("Vocabulary: {}.", vocabulary.join(", "));
+        let prompt = format!("Names and terms that may come up: {}.", vocabulary.join(", "));
         if !vocabulary.is_empty() {
             params.set_initial_prompt(&prompt);
         }

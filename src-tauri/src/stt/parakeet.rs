@@ -15,7 +15,7 @@ impl Parakeet {
         Ok(Self(Mutex::new(model)))
     }
 
-    pub fn transcribe(&self, audio: &[f32], _language: &str, translate: bool, _vocabulary: &[String]) -> Result<String> {
+    pub fn transcribe(&self, audio: &[f32], _language: &str, translate: bool, vocabulary: &[String]) -> Result<String> {
         if translate {
             return Err(anyhow!("Parakeet does not support translate-to-English mode; switch to Whisper or turn off Translate."));
         }
@@ -25,6 +25,22 @@ impl Parakeet {
             .unwrap()
             .transcribe_with(audio, &ParakeetParams::default())
             .map_err(|e| anyhow!("Parakeet: {e}"))?;
-        Ok(result.text.trim().to_string())
+        Ok(spell_vocabulary(result.text.trim(), vocabulary))
     }
+}
+
+/// Parakeet can't be prompted, so vocabulary only fixes the spelling of words it already heard
+/// ("kubernetes" → "Kubernetes").
+// shortcut: single-word terms only, matched case-insensitively; upgrade to fuzzy matching if misheard terms stay wrong.
+fn spell_vocabulary(text: &str, vocabulary: &[String]) -> String {
+    text.split(' ')
+        .map(|word| {
+            let core = word.trim_matches(|c: char| !c.is_alphanumeric());
+            match vocabulary.iter().find(|v| !v.contains(' ') && !core.is_empty() && v.eq_ignore_ascii_case(core)) {
+                Some(v) => word.replacen(core, v, 1),
+                None => word.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

@@ -602,6 +602,16 @@ pub fn assistant_history_delete(app: AppHandle, time: String) -> Result<(), Stri
 
 #[cfg(target_os = "macos")]
 #[tauri::command(async)]
+pub fn assistant_memory_get() -> String {
+    assistant::memory::load().join("\n")
+}
+
+#[tauri::command(async)]
+pub fn assistant_memory_save(text: String) -> Result<(), String> {
+    assistant::memory::replace(&text).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 pub fn assistant_history_clear(app: AppHandle) -> Result<(), String> {
     assistant::history::clear().map_err(|e| e.to_string())?;
     let _ = app.emit_to("main", "history-updated", ());

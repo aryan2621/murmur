@@ -108,6 +108,9 @@ impl Speaker {
         if was == Engine::Natural && choice.engine != Engine::Natural {
             self.kokoro.unload();
         }
+        if was == Engine::Cloned && choice.engine != Engine::Cloned {
+            crate::assistant::openvoice::unload();
+        }
     }
 
     /// The voice type chosen in Settings.
@@ -131,6 +134,7 @@ impl Speaker {
     /// Frees the natural voice's memory.
     pub fn unload(&self) {
         self.kokoro.unload();
+        crate::assistant::openvoice::unload();
     }
 
     pub fn say(&self, text: &str) {

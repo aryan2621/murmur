@@ -86,6 +86,13 @@ const CALCULATE: Action = action(
     &[("expression", "sum", "")],
     true,
 );
+const REMEMBER: Action = action(
+    "remember",
+    "keep a fact about the user for good, when they say remember, note or don't forget something (fact is one short sentence)",
+    &[("fact", "string", "")],
+    false,
+);
+const FORGET: Action = action("forget", "drop remembered facts when the user asks to forget something", &[("words", "string", "a word or phrase from the fact")], false);
 const WEB: &[Action] = &[
     action(
         "web_search",
@@ -137,7 +144,7 @@ const MAC: &[Action] = &[
 /// The actions on offer with these settings. Kept the same from question to question, since the
 /// AI server keeps the instructions read in advance only while they don't change.
 fn catalogue(cfg: &Config) -> Vec<&'static Action> {
-    let mut all = vec![&CHAT, &CALCULATE];
+    let mut all = vec![&CHAT, &CALCULATE, &REMEMBER, &FORGET];
     if cfg.web_access {
         all.extend(WEB);
     }
@@ -313,6 +320,8 @@ pub fn describe(action: &str, a: &Value) -> String {
     let s = |k| arg(a, k);
     match action {
         "calculate" => "Calculating".into(),
+        "remember" => "Saving to memory".into(),
+        "forget" => "Updating memory".into(),
         "web_search" => format!("Searching the web for “{}”", s("query")),
         "read_page" => format!("Reading {}", host_of(s("url"))),
         "weather" if !s("place").is_empty() => format!("Checking the weather in {}", s("place")),
@@ -364,6 +373,8 @@ fn run(action: &str, a: &Value, cfg: &Config, host: &dyn Host) -> String {
     let browser = "";
     let result = match action {
         "calculate" => calculate::run(s("expression")),
+        "remember" => super::memory::remember(s("fact")),
+        "forget" => super::memory::forget(s("words")),
         "web_search" => web_search(s("query"), host),
         "read_page" => read_webpage(s("url"), host),
         "weather" => weather(if s("place").is_empty() { cfg.location.trim() } else { s("place") }),
