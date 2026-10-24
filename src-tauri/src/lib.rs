@@ -86,8 +86,6 @@ pub struct Shared {
     load_lock: Mutex<()>,
     /// The speech model is being downloaded or loaded (or waits for setup to download it).
     loading: AtomicBool,
-    /// The mic is taken by a voice-clone sample; dictation waits.
-    sampling: AtomicBool,
     last_used: Mutex<Instant>,
     /// Download progress (0–1) of the speech ("speech") and AI ("brain") models, while downloading.
     downloads: Mutex<HashMap<&'static str, f32>>,
@@ -861,10 +859,6 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::new_conversation,
         commands::open_voice_settings,
         commands::confirm_answer,
-        commands::record_clone_sample,
-        commands::clone_profile_ready,
-        commands::install_voice_clone,
-        commands::clone_engine_ready,
     ]
 }
 
@@ -1002,7 +996,6 @@ pub fn run() {
                 transcribe_lock: Mutex::new(()),
                 load_lock: Mutex::new(()),
                 loading: AtomicBool::new(true),
-                sampling: AtomicBool::new(false),
                 last_used: Mutex::new(Instant::now()),
                 downloads: Mutex::new(HashMap::new()),
                 status_item: status,

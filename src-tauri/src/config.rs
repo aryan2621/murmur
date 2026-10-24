@@ -79,17 +79,8 @@ pub struct Config {
     pub voice: String,
     /// Speaking rate in words per minute.
     pub speech_rate: u32,
-    /// "system" (the macOS voice above), "natural" (Kokoro), or "cloned" (the cloning sidecar).
+    /// "system" (the macOS voice above) or "natural" (Kokoro).
     pub voice_engine: String,
-    /// Active cloned voice profile id under `voices/` in the data dir.
-    #[serde(default)]
-    pub cloned_voice_id: Option<String>,
-    /// Voice cloning engine for "cloned": "chatterbox", "f5" or "openvoice".
-    #[serde(default = "default_clone_engine")]
-    pub clone_engine: String,
-    /// User accepted the voice-cloning permission notice.
-    #[serde(default)]
-    pub clone_consent: bool,
     /// The natural voice's speaker, one of `model::NATURAL_VOICES` ("af_heart", "bm_george", …).
     pub natural_voice: String,
     /// Speak answers aloud. Off = answers only appear in the widget.
@@ -133,10 +124,6 @@ pub struct Config {
     /// Shown in Settings; MCP is started with `murmur --mcp` and proxies to HTTP.
     #[serde(default)]
     pub mcp_enabled: bool,
-}
-
-fn default_clone_engine() -> String {
-    "chatterbox".into()
 }
 
 fn default_true() -> bool {
@@ -218,9 +205,6 @@ impl Default for Config {
             voice: "Daniel".into(),
             speech_rate: 195,
             voice_engine: "system".into(),
-            cloned_voice_id: None,
-            clone_engine: default_clone_engine(),
-            clone_consent: false,
             natural_voice: "af_heart".into(),
             speak_replies: true,
             forget_after_minutes: 5,

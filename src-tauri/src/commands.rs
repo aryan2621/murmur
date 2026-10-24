@@ -623,52 +623,6 @@ pub fn assistant_history_clear(app: AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command(async)]
-pub fn record_clone_sample(shared: State<'_, Arc<Shared>>, seconds: Option<u32>) -> Result<(), String> {
-    use crate::assistant::openvoice;
-    use crate::audio;
-    let secs = seconds.unwrap_or(20).clamp(10, 30);
-    let cfg = shared.cfg();
-    if !cfg.clone_consent {
-        return Err("Turn on voice cloning consent first".into());
-    }
-    if shared.sampling.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Err("Already recording a sample".into());
-    }
-    let noop: audio::LevelFn = Box::new(|_| {});
-    let rec = shared
-        .recorder
-        .start(cfg.input_device.clone(), cfg.mic_processing(), noop)
-        .and_then(|_| {
-            std::thread::sleep(std::time::Duration::from_secs(secs as u64));
-            shared.recorder.stop()
-        });
-    shared.sampling.store(false, std::sync::atomic::Ordering::SeqCst);
-    let rec = rec.map_err(|e| e.to_string())?;
-    openvoice::save_reference(openvoice::DEFAULT_VOICE_ID, &rec.samples).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Sets up the voice cloning engine in the background (see `Assistant::install_clone`).
-#[cfg(target_os = "macos")]
-#[tauri::command(async)]
-pub fn install_voice_clone(assistant: State<'_, Arc<Assistant>>, engine: String) {
-    assistant.inner().install_clone(engine);
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command(async)]
-pub fn clone_engine_ready(engine: String) -> bool {
-    crate::assistant::openvoice::engine_ready(&engine)
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command(async)]
-pub fn clone_profile_ready() -> bool {
-    crate::assistant::openvoice::profile_ready(crate::assistant::openvoice::DEFAULT_VOICE_ID)
-}
-
-#[cfg(target_os = "macos")]
 /// Asks macOS for microphone access through AVFoundation, the same API the status is read from,
 /// so the app sees the answer straight away (opening the mic via Core Audio also triggers the
 /// prompt, but the status only updates after a restart). Shows the system prompt the first time.

@@ -122,7 +122,7 @@ impl Dictation {
                     drop(g);
                     mlog!("hands-free stopped");
                     self.finish_recording();
-                } else if self.shared.loading() || self.shared.sampling.load(Ordering::SeqCst) {
+                } else if self.shared.loading() {
                     drop(g);
                     let why = if self.shared.loading() { "Model still loading…" } else { "Recording a voice sample…" };
                     self.emit("error", Some(why.into()), None);

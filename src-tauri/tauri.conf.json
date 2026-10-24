@@ -36,9 +36,6 @@
     }
   },
   "bundle": {
-    "resources": {
-      "openvoice/*": "openvoice/"
-    },
     "active": true,
     "targets": [
       "app",

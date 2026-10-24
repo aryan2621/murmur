@@ -19,15 +19,13 @@ pub enum Engine {
     System,
     /// Kokoro: a natural AI voice.
     Natural,
-    /// OpenVoice clone sidecar (assistant only).
-    Cloned,
 }
 
 impl Engine {
     pub fn from(name: &str) -> Self {
         match name {
-            "natural" => Engine::Natural,
-            "cloned" => Engine::Cloned,
+            // "cloned" was a voice type once; those users get the natural voice.
+            "natural" | "cloned" => Engine::Natural,
             _ => Engine::System,
         }
     }
@@ -45,7 +43,6 @@ struct VoiceChoice {
     rate: u32,
     /// The natural voice's speaker (a Kokoro voice id).
     speaker: String,
-    cloned_voice_id: String,
 }
 
 impl VoiceChoice {
@@ -55,7 +52,6 @@ impl VoiceChoice {
             voice: resolve(&cfg.voice),
             rate: cfg.speech_rate,
             speaker: cfg.natural_voice.clone(),
-            cloned_voice_id: cfg.cloned_voice_id.clone().unwrap_or_else(|| crate::assistant::openvoice::DEFAULT_VOICE_ID.into()),
         }
     }
 }
@@ -80,19 +76,18 @@ pub struct Speaker {
 
 impl Speaker {
     pub fn new(cfg: &Config) -> Self {
-        crate::assistant::openvoice::set_engine(&cfg.clone_engine);
         let (tx, rx) = mpsc::channel::<Utterance>();
         let epoch = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(AtomicUsize::new(0));
         let player = Arc::new(Player::new());
         let kokoro = Arc::new(Kokoro::new(player.clone()));
-        let (e, p, k, pl) = (epoch.clone(), pending.clone(), kokoro.clone(), player.clone());
+        let (e, p, k) = (epoch.clone(), pending.clone(), kokoro.clone());
         std::thread::Builder::new()
             .name("murmur-speech".into())
             .spawn(move || {
                 for u in rx {
                     if u.epoch == e.load(Ordering::SeqCst) {
-                        speak(&u, &e, &k, &pl);
+                        speak(&u, &e, &k);
                     }
                     p.fetch_sub(1, Ordering::SeqCst);
                 }
@@ -104,14 +99,10 @@ impl Speaker {
     /// Switches voice / speed for everything said from now on, and frees the natural voice's
     /// memory when it's no longer used.
     pub fn configure(&self, cfg: &Config) {
-        crate::assistant::openvoice::set_engine(&cfg.clone_engine);
         let choice = VoiceChoice::from(cfg);
         let was = std::mem::replace(&mut *self.voice.lock().unwrap(), choice.clone()).engine;
         if was == Engine::Natural && choice.engine != Engine::Natural {
             self.kokoro.unload();
-        }
-        if was == Engine::Cloned && choice.engine != Engine::Cloned {
-            crate::assistant::openvoice::unload();
         }
     }
 
@@ -136,7 +127,6 @@ impl Speaker {
     /// Frees the natural voice's memory.
     pub fn unload(&self) {
         self.kokoro.unload();
-        crate::assistant::openvoice::unload();
     }
 
     pub fn say(&self, text: &str) {
@@ -157,7 +147,6 @@ impl Speaker {
                 voice: resolve(voice),
                 rate,
                 speaker: String::new(),
-                cloned_voice_id: crate::assistant::openvoice::DEFAULT_VOICE_ID.into(),
             }
         } else {
             let fallback = self.voice.lock().unwrap().voice.clone();
@@ -166,7 +155,6 @@ impl Speaker {
                 voice: fallback,
                 rate,
                 speaker: voice.to_string(),
-                cloned_voice_id: crate::assistant::openvoice::DEFAULT_VOICE_ID.into(),
             }
         };
         self.enqueue(text, choice);
@@ -210,17 +198,7 @@ impl Speaker {
 
 /// Says one sentence in the natural voice if it's chosen, falling back to the macOS voice if it
 /// can't (not downloaded, or its model failed to load).
-fn speak(u: &Utterance, epoch: &AtomicU64, kokoro: &Kokoro, player: &Player) {
-    if u.voice.engine == Engine::Cloned {
-        match crate::assistant::openvoice::synthesize(&u.text, &u.voice.cloned_voice_id) {
-            Ok(audio) if epoch.load(Ordering::SeqCst) == u.epoch => {
-                player.add(audio);
-                return;
-            }
-            Ok(_) => return,
-            Err(e) => mlog!("cloned voice failed ({e}); using the macOS voice"),
-        }
-    }
+fn speak(u: &Utterance, epoch: &AtomicU64, kokoro: &Kokoro) {
     if u.voice.engine == Engine::Natural {
         let speed = (u.voice.rate as f32 / NORMAL_RATE).clamp(0.7, 1.5);
         match kokoro.speak(&u.text, &u.voice.speaker, speed, || epoch.load(Ordering::SeqCst) != u.epoch) {
