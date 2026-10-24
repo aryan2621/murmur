@@ -166,3 +166,16 @@
   body { user-select: none; -webkit-user-select: none; cursor: default; }
   input, textarea, [data-selectable] { user-select: text; -webkit-user-select: text; }
 }
+
+/* Motion is decoration here; honour the system's Reduce motion setting. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+::selection { background: color-mix(in oklab, var(--primary) 28%, transparent); color: inherit; }
+* { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--muted-foreground) 40%, transparent) transparent; }
+

@@ -107,7 +107,7 @@ export function EntryRow({ entry, onDeleted, onUpdated }: { entry: Entry; onDele
               {entry.text}
             </p>
           )}
-          <p className="mt-1.5 text-[11px] text-muted-foreground/80 tabular-nums">{meta.join(" · ")}</p>
+          <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">{meta.join(" · ")}</p>
         </div>
         <div className="absolute top-3 right-3 flex gap-0.5 rounded-lg border bg-card p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           {editing ? (

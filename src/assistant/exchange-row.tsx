@@ -26,7 +26,7 @@ export function ExchangeRow({ entry, onDeleted }: { entry: Exchange; onDeleted?:
         {!!entry.actions?.length && (
           <ul className="mt-1.5 flex flex-wrap gap-1">
             {entry.actions.map((a, i) => (
-              <li key={i} className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <li key={i} className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                 <Zap className="size-3" />
                 {a}
               </li>
@@ -36,7 +36,7 @@ export function ExchangeRow({ entry, onDeleted }: { entry: Exchange; onDeleted?:
         <p data-selectable className="mt-1 text-[14px] leading-relaxed break-words whitespace-pre-wrap text-foreground/75">
           {entry.answer}
         </p>
-        <p className="mt-1.5 text-[11px] text-muted-foreground/80 tabular-nums">{meta.join(" · ")}</p>
+        <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">{meta.join(" · ")}</p>
       </div>
       <div className="absolute top-3 right-3 flex gap-0.5 rounded-lg border bg-card p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <Tooltip>

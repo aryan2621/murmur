@@ -51,10 +51,12 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
     saveStep(n);
   };
   const hasAssistant = !!state?.assistant;
-  const steps = hasAssistant ? ALL_STEPS : ALL_STEPS.filter((s) => !(ASSISTANT_STEPS as readonly string[]).includes(s));
   const done = ALL_STEPS.length - 1;
-  /** Index of a step in the progress bar, which leaves out the assistant's on Windows. */
-  const shown = steps.indexOf(ALL_STEPS[step]);
+  // The bar shows one phase at a time: dictation first, then the optional assistant, so the
+  // first try isn't seven steps away.
+  const inAssistant = (ASSISTANT_STEPS as readonly string[]).includes(ALL_STEPS[step]);
+  const phase: readonly string[] = inAssistant ? ASSISTANT_STEPS : DICTATION_STEPS;
+  const shown = step === done ? phase.length : phase.indexOf(ALL_STEPS[step]);
 
   const finish = async () => {
     try {
@@ -84,11 +86,12 @@ export default function Setup({ app, onDone }: { app: ReturnType<typeof useAppSt
       </div>
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[560px] px-8 pt-4 pb-16">
-          <ol className="mb-8 flex items-center gap-2" aria-label="Setup progress">
-            {steps.map((label, i) => (
+          {inAssistant && <p className="mb-2 text-xs font-medium text-muted-foreground">Optional: set up {name}</p>}
+          <ol className="mb-8 flex items-center gap-2" aria-label={inAssistant ? `${name} setup progress` : "Setup progress"}>
+            {phase.map((label, i) => (
               <li key={label} className="flex flex-1 flex-col gap-1.5" aria-current={i === shown ? "step" : undefined}>
                 <span className={cn("h-1 rounded-full transition-colors", i <= shown ? "bg-primary" : "bg-border")} />
-                <span className={cn("text-[11px]", i === shown ? "font-medium text-foreground" : "text-muted-foreground")}>{label}</span>
+                <span className={cn("text-xs", i === shown ? "font-medium text-foreground" : "text-muted-foreground")}>{label}</span>
               </li>
             ))}
           </ol>
@@ -171,7 +174,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
         Hold a key, speak, and your words are typed wherever your cursor is. Speech is turned into text on this Mac, so nothing you say leaves it.
       </StepHeader>
       <Panel className="px-5 py-4 text-sm text-muted-foreground">
-        Setup takes a few minutes: allow two permissions, download the speech model and try your first dictation. Then, if you like, set up the assistant you can ask out loud.
+        Three steps: allow two permissions, download the speech model, and try your first dictation. The assistant you can ask out loud is optional and comes after.
       </Panel>
       <Nav onNext={onNext} nextLabel="Set up Murmur" />
     </>
@@ -244,6 +247,7 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
   const [progress, setProgress] = useState<number | null>(state?.model_progress ?? null);
   const [choice, setChoice] = useState(state?.config.model ?? SETUP_MODELS[0]);
   const [starting, setStarting] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
     const un = events.downloadProgress(({ model, progress: p }) => {
@@ -251,10 +255,16 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
       setProgress(p);
       if (p === null) refresh();
     });
+    const unErr = events.downloadError((m) => {
+      setProgress(null);
+      setFailed(m);
+      refresh();
+    });
     // Loading after the download finishes takes a moment; keep checking until it's ready.
     const id = window.setInterval(refresh, 2000);
     return () => {
       un.then((u) => u());
+      unErr.then((u) => u());
       window.clearInterval(id);
     };
   }, [refresh]);
@@ -268,11 +278,12 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
 
   const download = async () => {
     setStarting(true);
+    setFailed(null);
     try {
       await api.downloadModel(choice);
       await refresh();
     } catch (e) {
-      toast.error(`Couldn't start the download: ${e}`);
+      setFailed(String(e));
     } finally {
       setStarting(false);
     }
@@ -330,6 +341,11 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
     <>
       <StepHeader title="Speech model">Murmur turns speech into text with Whisper, running on this Mac. It needs a one-time download.</StepHeader>
       <Panel className="overflow-hidden">{body}</Panel>
+      {failed && !downloading && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          The download stopped: {failed}. Check your internet connection, then try again.
+        </p>
+      )}
       {!ready && !downloading && !downloaded ? (
         <div className="mt-6 flex items-center gap-3">
           <Button variant="ghost" onClick={onBack} disabled={starting}>
@@ -337,7 +353,7 @@ function Model({ app, onBack, onNext }: { app: ReturnType<typeof useAppState>; o
           </Button>
           <span className="flex-1" />
           <Button onClick={download} disabled={starting}>
-            {starting ? <Loader2 className="animate-spin" /> : <Download />} Download
+            {starting ? <Loader2 className="animate-spin" /> : <Download />} {failed ? "Try again" : "Download"}
           </Button>
         </div>
       ) : (
@@ -465,7 +481,7 @@ function BrainStep({ app, name, onBack, onNext, onSkip }: { app: ReturnType<type
       <div className="mb-6 grid size-14 place-items-center rounded-2xl bg-brand shadow-lg shadow-brand/25">
         <Sparkles className="size-7 text-brand-foreground" strokeWidth={2.25} />
       </div>
-      <StepHeader title={<>Meet {name}<span className="text-muted-foreground/60">.</span></>}>
+      <StepHeader title={<>Meet {name}<span className="text-primary">.</span></>}>
         Murmur also has an assistant: ask anything out loud and hear the answer, or have it act on this Mac. Its AI runs on this Mac too, so it needs a one-time download. You can skip this and set it up later from its page.
       </StepHeader>
       <Panel className="overflow-hidden">

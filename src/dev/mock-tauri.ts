@@ -158,6 +158,8 @@ const handlers: Record<string, (a: any) => unknown> = {
 
 let cbId = 0;
 (window as any).__TAURI_INTERNALS__ = {
+  // getCurrentWebview() (History's drag-and-drop) reads these labels.
+  metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
   transformCallback: () => ++cbId,
   invoke: async (cmd: string, args: any) => {
     const h = handlers[cmd];

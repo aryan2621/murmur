@@ -126,53 +126,56 @@ export default function App() {
                 <div className="font-display text-[26px] leading-none tracking-tight">Murmur</div>
               </div>
 
-              <nav className="flex flex-col gap-0.5">
+              <nav aria-label="Main" className="flex flex-col gap-0.5">
                 {tabs.map(({ id, label, icon: Icon }, i) => (
                   <button
                     key={id}
                     onClick={() => setTab(id)}
+                    aria-current={tab === id ? "page" : undefined}
+                    aria-keyshortcuts={`Meta+${i + 1}`}
                     className={cn(
-                      "group flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] transition-colors duration-150",
+                      "group flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                       tab === id
                         ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                         : "text-sidebar-foreground/75 hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.05]",
                     )}
                   >
-                    <Icon className="size-[17px]" strokeWidth={tab === id ? 2.25 : 1.75} />
+                    <Icon aria-hidden className="size-[17px]" strokeWidth={tab === id ? 2.25 : 1.75} />
                     <span className="flex-1 text-left">{id === "assistant" ? name : label}</span>
-                    <span className="text-[11px] text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/80">⌘{i + 1}</span>
+                    <span aria-hidden className={cn("text-xs tabular-nums", tab === id ? "text-sidebar-accent-foreground/70" : "text-muted-foreground")}>⌘{i + 1}</span>
                   </button>
                 ))}
               </nav>
 
               <button
                 onClick={() => setSettingsOpen(true)}
-                className="group mt-auto mb-2 flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] text-sidebar-foreground/75 transition-colors duration-150 hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.05]"
+                aria-keyshortcuts="Meta+,"
+                className="group mt-0.5 flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] text-sidebar-foreground/75 transition-colors duration-150 outline-none hover:bg-black/[0.04] hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring dark:hover:bg-white/[0.05]"
               >
-                <SettingsIcon className="size-[17px]" strokeWidth={1.75} />
+                <SettingsIcon aria-hidden className="size-[17px]" strokeWidth={1.75} />
                 <span className="flex-1 text-left">Settings</span>
-                <span className="text-[11px] text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/80">⌘,</span>
+                <span aria-hidden className="text-xs text-muted-foreground">⌘,</span>
               </button>
 
-              <div className="rounded-xl border border-sidebar-border bg-card/70 p-3 shadow-hairline backdrop-blur">
-                <div className="flex items-start gap-2.5">
-                  <span className={cn("mt-[5px] size-2 shrink-0 rounded-full", statusTone(status))} />
+              <div className="mt-auto rounded-xl border border-sidebar-border bg-card/70 p-3 shadow-hairline backdrop-blur">
+                <div role="status" aria-live="polite" className="flex items-start gap-2.5">
+                  <span aria-hidden className={cn("mt-[5px] size-2 shrink-0 rounded-full", statusTone(status))} />
                   <span className="text-xs leading-snug font-medium text-foreground/85">{status.startsWith("Ready") ? "Ready to listen" : status}</span>
                 </div>
-                <div className="mt-2.5 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5 border-t border-sidebar-border pt-2.5 text-[11px] text-muted-foreground">
+                <div className="mt-2.5 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5 border-t border-sidebar-border pt-2.5 text-xs text-muted-foreground">
                   <span className="flex"><Kbd>{key}</Kbd></span> <span>hold to dictate</span>
                   <span className="flex gap-0.5"><Kbd>{key}</Kbd><Kbd>{key}</Kbd></span> <span>hands-free</span>
                   {assistantOn && (
                     <>
                       <span className="flex"><Kbd>{askKey}</Kbd></span> <span>hold to ask {name}</span>
-                      <span className="flex"><Kbd>tap {askKey}</Kbd></span> <span>conversation</span>
+                      <span className="flex"><Kbd>tap {askKey}</Kbd></span> <span>talk back and forth</span>
                     </>
                   )}
                 </div>
               </div>
             </aside>
 
-            <main className="overflow-y-auto bg-background">
+            <main id="content" className="overflow-y-auto bg-background">
               <div data-tauri-drag-region className="sticky top-0 z-10 h-10 bg-gradient-to-b from-background via-background/80 to-transparent" />
               <div className="mx-auto max-w-[880px] px-10 pb-16" key={tab}>
                 <div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-300">

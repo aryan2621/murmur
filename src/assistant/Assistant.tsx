@@ -84,8 +84,7 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
   return (
     <>
       <PageHeader
-        eyebrow="Assistant"
-        title={<>{name}<span className="text-muted-foreground/60">.</span></>}
+        title={<>{name}<span className="text-primary">.</span></>}
         description={<>Hold <Kbd>{key}</Kbd> to ask a quick question, tap it for a conversation. It answers out loud and can act on this Mac.</>}
       />
 
@@ -171,7 +170,7 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
       {/* Hero: today's questions with a 7-day sparkline, and how fast answers come back. */}
       <div className="grid grid-cols-[1.65fr_1fr] gap-4">
         <div className="relative overflow-hidden rounded-2xl bg-lavender p-6 text-lavender-foreground">
-          <div className="text-xs font-medium tracking-wide uppercase opacity-70">Today</div>
+          <div className="text-xs font-medium tracking-wide uppercase opacity-90">Today</div>
           <div className="mt-2 font-display text-[76px] leading-[0.85] tracking-[-0.03em] tabular-nums">{today.toLocaleString()}</div>
           <div className="mt-2 text-sm opacity-80">
             question{today === 1 ? "" : "s"} asked
@@ -185,7 +184,7 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
                   <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis dataKey="weekday" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "currentColor", opacity: 0.6 }} interval={0} padding={{ left: 14, right: 14 }} />
+              <XAxis dataKey="weekday" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "currentColor", opacity: 0.9 }} interval={0} padding={{ left: 14, right: 14 }} />
               <ChartTooltip
                 cursor={{ stroke: "currentColor", strokeOpacity: 0.25 }}
                 content={({ active, payload }) => {

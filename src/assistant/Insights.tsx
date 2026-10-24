@@ -70,7 +70,7 @@ function ChartPanel({ title, description, table, children }: { title: string; de
     <Panel>
       <div className="flex items-start justify-between gap-4 px-6 pt-5">
         <div>
-          <h3 className="text-[15px] font-semibold tracking-tight">{title}</h3>
+          <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>
         </div>
         <Tooltip>

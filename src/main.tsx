@@ -28,7 +28,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
         <div>
           <p className="text-sm font-medium">Something went wrong in this page.</p>
           <p className="mt-1 text-xs text-muted-foreground">{this.state.error.message}</p>
-          <button className="mt-4 text-sm text-primary underline" onClick={() => location.reload()}>
+          <button className="mt-4 text-sm text-accent-foreground underline underline-offset-2" onClick={() => location.reload()}>
             Reload
           </button>
         </div>

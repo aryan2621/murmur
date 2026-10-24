@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Area, AreaChart, XAxis } from "recharts";
-import { ArrowRight, ClipboardCopy, Eraser, Flame, NotebookPen, ShieldAlert } from "lucide-react";
+import { ArrowRight, ClipboardCopy, Eraser, NotebookPen, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
 import { Textarea } from "@/components/ui/textarea";
 import { EntryRow } from "@/components/entry-row";
-import { EmptyState, Kbd, PageHeader, Panel, SectionTitle } from "@/components/bits";
+import { Kbd, PageHeader, Panel, SectionTitle } from "@/components/bits";
 import { api, events, wordCount } from "@/lib/api";
-import { formatMinutes, streak, wordsPerDay } from "@/lib/metrics";
+import { wordsPerDay } from "@/lib/metrics";
 import { useAppState, useHistory } from "@/hooks/use-app";
 import { focusedField, insertAtCursor } from "@/lib/utils";
 import type { Tab } from "@/App";
@@ -19,10 +17,8 @@ function greeting() {
   return h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
 
-const spark: ChartConfig = { value: { label: "Words", color: "var(--chart-1)" } };
-
 export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState>; goTo: (t: Tab) => void }) {
-  const { entries, stats } = useHistory("", 100_000);
+  const { entries } = useHistory("", 100_000);
   const [notes, setNotes] = useState("");
   const [flash, setFlash] = useState(false);
   const notesRef = useRef<HTMLTextAreaElement>(null);
@@ -30,10 +26,7 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
   const perms = app.state?.permissions;
   const key = app.state?.hotkeys.find((h) => h.id === app.state?.config.hotkey)?.label.split(" ")[0] ?? "fn";
 
-  const week = useMemo(() => wordsPerDay(entries ?? [], 7), [entries]);
-  const days = useMemo(() => streak(entries ?? []), [entries]);
-  const today = week.at(-1)?.value ?? 0;
-  const avg = week.slice(0, -1).reduce((s, d) => s + d.value, 0) / 6;
+  const today = useMemo(() => wordsPerDay(entries ?? [], 1).at(-1)?.value ?? 0, [entries]);
 
   useEffect(() => {
     api.notes().then(setNotes);
@@ -67,10 +60,14 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
   }, []);
 
   const date = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  const fresh = entries !== null && entries.length === 0;
 
   return (
     <>
-      <PageHeader eyebrow={date} title={<>{greeting()}<span className="text-muted-foreground/60">.</span></>} />
+      <PageHeader
+        title={<>{greeting()}<span className="text-primary">.</span></>}
+        description={fresh ? <>Hold <Kbd>{key}</Kbd> in any app, speak, and let go. Your words appear where you were typing.</> : <>{date} · {today ? `${today.toLocaleString()} words dictated today` : "Nothing dictated yet today"}</>}
+      />
 
       {perms && !perms.accessibility && (
         <Alert className="mb-4 rounded-xl">
@@ -93,60 +90,6 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
         </Alert>
       )}
 
-      {/* Hero: today's words with a 7-day sparkline, and the streak. */}
-      <div className="grid grid-cols-[1.65fr_1fr] gap-4">
-        <div className="relative overflow-hidden rounded-2xl bg-lavender p-6 text-lavender-foreground">
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="text-xs font-medium tracking-wide uppercase opacity-70">Today</div>
-              <div className="mt-2 font-display text-[76px] leading-[0.85] tracking-[-0.03em] tabular-nums">{today.toLocaleString()}</div>
-              <div className="mt-2 text-sm opacity-80">
-                words dictated
-                {avg > 0 && <span className="opacity-80"> · {today >= avg ? "above" : "below"} your {Math.round(avg)}/day average</span>}
-              </div>
-            </div>
-          </div>
-          <ChartContainer config={spark} className="mt-4 aspect-auto h-20 w-full">
-            <AreaChart data={week} margin={{ left: 2, right: 2, top: 4, bottom: 0 }}>
-              <defs>
-                <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--color-value)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="weekday" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "currentColor", opacity: 0.6 }} interval={0} padding={{ left: 14, right: 14 }} />
-              <ChartTooltip
-                cursor={{ stroke: "currentColor", strokeOpacity: 0.25 }}
-                content={({ active, payload }) => {
-                  const p = active && payload?.[0]?.payload;
-                  return p ? (
-                    <div className="rounded-lg border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md">
-                      <span className="font-medium">{p.value.toLocaleString()} words</span> · {p.label}
-                    </div>
-                  ) : null;
-                }}
-              />
-              <Area dataKey="value" type="monotone" stroke="var(--color-value)" strokeWidth={2} fill="url(#spark-fill)" dot={false} activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--lavender)" }} />
-            </AreaChart>
-          </ChartContainer>
-        </div>
-
-        <div className="flex flex-col justify-between rounded-2xl bg-forest p-6 text-forest-foreground">
-          <div className="flex items-center gap-2 text-xs font-medium tracking-wide uppercase opacity-75">
-            <Flame className="size-3.5" /> Streak
-          </div>
-          <div>
-            <div className="font-display text-[64px] leading-[0.85] tracking-[-0.03em] tabular-nums">{days}</div>
-            <div className="mt-1.5 text-sm opacity-80">{days === 1 ? "day" : "days"} in a row</div>
-          </div>
-          <div className="border-t border-white/15 pt-3 text-xs">
-            <span className="font-display text-2xl leading-none">{stats ? formatMinutes(stats.minutes_saved) : "–"}</span>
-            <span className="ml-2 opacity-70">saved vs typing</span>
-          </div>
-        </div>
-      </div>
-
-      <SectionTitle>Scratchpad</SectionTitle>
       <Panel className={flash ? "ring-2 ring-primary/40 transition-shadow" : "transition-shadow"}>
         <div className="flex items-center gap-2 border-b px-5 py-3 text-xs text-muted-foreground">
           <NotebookPen className="size-3.5" />
@@ -202,7 +145,7 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
         {entries === null ? null : entries.length ? (
           entries.slice(0, 3).map((e) => <EntryRow key={e.time} entry={e} />)
         ) : (
-          <EmptyState title="Nothing yet">Hold your dictation key in any text field and start talking.</EmptyState>
+          <p className="px-5 py-6 text-sm text-muted-foreground">Your last three dictations show up here, ready to copy or fix.</p>
         )}
       </Panel>
     </>

@@ -9,7 +9,7 @@ import { ChartColumn, Table2 } from "lucide-react";
 import { EmptyState, PageHeader, Panel } from "@/components/bits";
 import { useHistory } from "@/hooks/use-app";
 import { wordCount, type Entry } from "@/lib/api";
-import { DAY, wordsPerDay } from "@/lib/metrics";
+import { DAY, formatMinutes, streak, wordsPerDay } from "@/lib/metrics";
 
 type Range = "7" | "30" | "all";
 
@@ -53,8 +53,6 @@ function useInsights(entries: Entry[], range: Range) {
     for (const e of list) byHour[new Date(e.time).getHours()].value += 1;
 
 
-    const audio = list.reduce((s, e) => s + e.audio_seconds, 0);
-    const compute = list.reduce((s, e) => s + e.transcribe_ms, 0) / 1000;
     const words = list.reduce((s, e) => s + wordCount(e.text), 0);
     const spoken = list.filter((e) => e.audio_seconds >= 1);
     const spokenWords = spoken.reduce((s, e) => s + wordCount(e.text), 0);
@@ -70,7 +68,6 @@ function useInsights(entries: Entry[], range: Range) {
       byHour,
       words,
       busiest: busiest.value ? busiest.label : null,
-      realtime: compute > 0 ? audio / compute : 0,
       wpm: spokenSecs > 0 ? spokenWords / (spokenSecs / 60) : 0,
     };
   }, [entries, range]);
@@ -83,7 +80,7 @@ function ChartPanel({ title, description, table, children, className }: { title:
     <Panel className={className}>
       <div className="flex items-start justify-between gap-4 px-6 pt-5">
         <div>
-          <h3 className="text-[15px] font-semibold tracking-tight">{title}</h3>
+          <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>
         </div>
         <Tooltip>
@@ -153,8 +150,9 @@ function Hero({ value, label, hint }: { value: string; label: string; hint: stri
 }
 
 export default function DictationInsights() {
-  const { entries } = useHistory("", 100_000);
+  const { entries, stats } = useHistory("", 100_000);
   const [range, setRange] = useState<Range>("30");
+  const days = useMemo(() => streak(entries ?? []), [entries]);
   const d = useInsights(entries ?? [], range);
   const t = d.trend;
 
@@ -162,7 +160,7 @@ export default function DictationInsights() {
     <>
       <PageHeader
         title="Insights"
-        description={d.busiest ? `You dictate most around ${d.busiest}. Here's how you talk and how fast Murmur keeps up.` : "How you talk and how fast Murmur keeps up."}
+        description={d.busiest ? `You dictate most around ${d.busiest}.` : "How you talk, and how fast Murmur keeps up."}
         actions={
           <ToggleGroup type="single" variant="outline" size="sm" value={range} onValueChange={(v) => v && setRange(v as Range)} className="rounded-lg bg-card shadow-lift">
             <ToggleGroupItem value="7" className="px-3">7 days</ToggleGroupItem>
@@ -178,10 +176,11 @@ export default function DictationInsights() {
         </Panel>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <Hero value={d.words.toLocaleString()} label="Words" hint={`across ${d.count.toLocaleString()} dictation${d.count === 1 ? "" : "s"}`} />
             <Hero value={d.wpm ? Math.round(d.wpm).toString() : "–"} label="Words per minute" hint="your speaking pace" />
-            <Hero value={d.realtime ? `${d.realtime.toFixed(1)}×` : "–"} label="Faster than real time" hint="speech length ÷ processing time" />
+            <Hero value={stats ? formatMinutes(stats.minutes_saved) : "–"} label="Time saved" hint="vs typing, all time" />
+            <Hero value={days.toString()} label={days === 1 ? "Day in a row" : "Days in a row"} hint="with at least one dictation" />
           </div>
 
           <ChartPanel

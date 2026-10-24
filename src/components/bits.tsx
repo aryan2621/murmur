@@ -25,13 +25,12 @@ export function IconTile({ icon: Icon, className }: { icon: LucideIcon; classNam
   );
 }
 
-export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
     <header className="mb-8 flex items-end justify-between gap-6">
       <div>
-        {eyebrow && <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">{eyebrow}</div>}
         <h1 className="font-display text-[44px] leading-[0.95] tracking-[-0.02em]">{title}</h1>
-        {description && <p className="mt-3 max-w-xl text-sm text-muted-foreground">{description}</p>}
+        {description && <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">{description}</p>}
       </div>
       {actions}
     </header>

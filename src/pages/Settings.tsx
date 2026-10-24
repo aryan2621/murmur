@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, AudioLines, Brain, FolderOpen, Info, Loader2, Keyboard, MessagesSquare, Play, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Volume2, X, Zap, type LucideIcon } from "lucide-react";
+import { ArrowRight, AudioLines, Brain, ChevronRight, FolderOpen, Info, Loader2, Keyboard, MessagesSquare, Play, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Volume2, X, Zap, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,19 @@ function Section({ title, children }: { title?: string; children: ReactNode }) {
       {title && <h3 className="mb-2 px-1 text-[13px] font-semibold tracking-tight">{title}</h3>}
       <Panel className="overflow-hidden">{children}</Panel>
     </section>
+  );
+}
+
+/** Rarely needed settings, folded away until asked for. */
+function More({ title = "More options", children }: { title?: string; children: ReactNode }) {
+  return (
+    <details className="group mb-6">
+      <summary className="mb-2 flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[13px] font-semibold tracking-tight outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <ChevronRight aria-hidden className="size-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+        {title}
+      </summary>
+      <Panel className="overflow-hidden">{children}</Panel>
+    </details>
   );
 }
 
@@ -130,7 +143,13 @@ const STYLES: [DictationStyle, string][] = [
 export default function SettingsDialog({ app, open, onOpenChange, pane, onPaneChange, onRunSetup }: { app: ReturnType<typeof useAppState>; open: boolean; onOpenChange: (open: boolean) => void; pane: Pane; onPaneChange: (pane: Pane) => void; onRunSetup: () => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(640px,calc(100vh-4rem))] w-[min(880px,calc(100vw-3rem))] max-w-none gap-0 overflow-hidden bg-background p-0">
+      <DialogContent
+        // Opening on the close button drew a focus ring there; start on the current section.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          (e.currentTarget as HTMLElement).querySelector<HTMLElement>('nav [aria-current="page"]')?.focus({ preventScroll: true });
+        }}
+        className="flex h-[min(640px,calc(100vh-4rem))] w-[min(880px,calc(100vw-3rem))] max-w-none gap-0 overflow-hidden bg-background p-0">
         {open && <SettingsPanel app={app} pane={pane} setPane={onPaneChange} onRunSetup={onRunSetup} />}
       </DialogContent>
     </Dialog>
@@ -264,7 +283,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               </Row>
             )}
             {a && (
-              <Row id="command-key" title="Command key" description="Select text, hold this key and say how to change it (“make it shorter”, “translate to Hindi”). With nothing selected it writes what you ask for. Uses the local AI.">
+              <Row id="command-key" title="Command key" description="Select text, hold this key and say “make it shorter”. With nothing selected, it writes what you ask for. Uses the local AI.">
                 <Select value={c.command_hotkey || "off"} onValueChange={(v) => save({ command_hotkey: v === "off" ? "" : v })}>
                   <SelectTrigger id="command-key" className="w-52"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -355,6 +374,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
       </>
     ),
     text: (
+      <>
           <Section>
             <Row id="style" title="Dictation style" description="How your words are tidied before they are typed. All styles run on your Mac.">
               <Select value={c.dictation_style ?? "clean"} onValueChange={(v) => save({ dictation_style: v as DictationStyle })}>
@@ -373,6 +393,59 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 <Switch id="llm-cleanup" checked={c.llm_cleanup ?? false} onCheckedChange={(v) => save({ llm_cleanup: v })} />
               </Row>
             )}
+            <Row id="fillers" title="Remove filler words" description="Drops “um”, “uh”, stutters and set-off “you know”, “I mean”. Writes times as 10:30.">
+              <Switch id="fillers" checked={c.remove_fillers} onCheckedChange={(v) => save({ remove_fillers: v })} />
+            </Row>
+            <Row stack id="vocab" title="Vocabulary" description="Names, products and jargon to spell correctly. One per line.">
+              <Textarea
+                id="vocab"
+                rows={3}
+                value={vocab}
+                placeholder={"Acme Corp\nKubernetes"}
+                onChange={(e) => setVocab(e.target.value)}
+                onBlur={() => save({ vocabulary: vocab.split(/[\n,]/).map((s) => s.trim()).filter(Boolean) })}
+              />
+            </Row>
+            <Row stack title="Replacements" description="Fix words Murmur keeps getting wrong. Whole words, any case.">
+              <div className="flex flex-col gap-2">
+                {repl.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={r.from}
+                      placeholder="Heard as…"
+                      onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))}
+                      onBlur={() => saveRepl(repl)}
+                    />
+                    <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                    <Input
+                      value={r.to}
+                      placeholder="Replace with…"
+                      onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))}
+                      onBlur={() => saveRepl(repl)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Remove replacement"
+                      onClick={() => {
+                        const next = repl.filter((_, j) => j !== i);
+                        setRepl(next);
+                        saveRepl(next);
+                      }}
+                    >
+                      <X />
+                    </Button>
+                  </div>
+                ))}
+                <div>
+                  <Button variant="outline" size="sm" onClick={() => setRepl([...repl, { from: "", to: "" }])}>
+                    <Plus /> Add replacement
+                  </Button>
+                </div>
+              </div>
+            </Row>
+          </Section>
+          <More>
             <Row stack title="Per-app styles" description="Use a different style in particular apps (matched by bundle id). With the local AI on, add instructions too.">
               <div className="flex flex-col gap-2">
                 <datalist id="recent-apps">
@@ -433,57 +506,6 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             <Row id="learn" title="Learn from History edits" description="When you fix a dictation in History, offer to save replacements or vocabulary.">
               <Switch id="learn" checked={c.learn_from_corrections ?? true} onCheckedChange={(v) => save({ learn_from_corrections: v })} />
             </Row>
-            <Row id="fillers" title="Remove filler words" description="Drops “um”, “uh”, stutters and set-off “you know”, “I mean”. Writes times as 10:30.">
-              <Switch id="fillers" checked={c.remove_fillers} onCheckedChange={(v) => save({ remove_fillers: v })} />
-            </Row>
-            <Row stack id="vocab" title="Vocabulary" description="Names, products and jargon to spell correctly. One per line.">
-              <Textarea
-                id="vocab"
-                rows={3}
-                value={vocab}
-                placeholder={"Acme Corp\nKubernetes"}
-                onChange={(e) => setVocab(e.target.value)}
-                onBlur={() => save({ vocabulary: vocab.split(/[\n,]/).map((s) => s.trim()).filter(Boolean) })}
-              />
-            </Row>
-            <Row stack title="Replacements" description="Fix words Murmur keeps getting wrong. Whole words, any case.">
-              <div className="flex flex-col gap-2">
-                {repl.map((r, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <Input
-                      value={r.from}
-                      placeholder="Heard as…"
-                      onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))}
-                      onBlur={() => saveRepl(repl)}
-                    />
-                    <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
-                    <Input
-                      value={r.to}
-                      placeholder="Replace with…"
-                      onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))}
-                      onBlur={() => saveRepl(repl)}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Remove replacement"
-                      onClick={() => {
-                        const next = repl.filter((_, j) => j !== i);
-                        setRepl(next);
-                        saveRepl(next);
-                      }}
-                    >
-                      <X />
-                    </Button>
-                  </div>
-                ))}
-                <div>
-                  <Button variant="outline" size="sm" onClick={() => setRepl([...repl, { from: "", to: "" }])}>
-                    <Plus /> Add replacement
-                  </Button>
-                </div>
-              </div>
-            </Row>
             <Row stack title="Snippets" description="Say a trigger at the end of a dictation (e.g. ;;sig) to expand it into longer text.">
               <div className="flex flex-col gap-2">
                 {snippets.map((s, i) => (
@@ -523,9 +545,11 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 </div>
               </div>
             </Row>
-          </Section>
+          </More>
+      </>
     ),
     brain: !a || !c.assistant_enabled ? off : (
+      <>
           <Section>
             <Row
               id="brain"
@@ -611,7 +635,9 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 onBlur={() => (prompt.trim() || null) !== c.system_prompt && save({ system_prompt: prompt.trim() || null })}
               />
             </Row>
-            <Row id="forget" title="Memory" description="Follow-up questions remember the conversation until it goes quiet for this long.">
+          </Section>
+          <Section title="Memory">
+            <Row id="forget" title="Follow-up questions" description="Follow-up questions remember the conversation until it goes quiet for this long.">
               <Choice id="forget" className="w-44" value={c.forget_after_minutes} options={FORGET} format={(v) => `${v} minutes`} onChange={(v) => save({ forget_after_minutes: v })} />
             </Row>
             <Row id="auto-memory" title="Learn about me" description="After each answer, note lasting facts you mention (names, places, preferences). Stays on this Mac.">
@@ -627,10 +653,13 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 onBlur={() => api.saveMemory(facts).catch((e) => toast.error(String(e)))}
               />
             </Row>
+          </Section>
+          <More>
             <Row id="keep" title="Keep model loaded" description="Loading takes a few seconds; while loaded the 8B uses about 6 GB of memory (the 4B about 3 GB).">
               <Choice id="keep" className="w-44" value={c.keep_alive} options={KEEP_ALIVE} onChange={(v) => save({ keep_alive: v })} />
             </Row>
-          </Section>
+          </More>
+      </>
     ),
     actions: !a || !c.assistant_enabled ? off : (
           <Section>
@@ -841,7 +870,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
               </Select>
             </Row>
           </Section>
-          <Section title="Advanced (agents)">
+          <More title="For scripts and agents">
             <Row id="http" title="Local HTTP API" description="127.0.0.1 only — for scripts and `murmur --mcp` in Cursor.">
               <Switch id="http" checked={c.http_enabled ?? false} onCheckedChange={(v) => save({ http_enabled: v, http_token: c.http_token || crypto.randomUUID() })} />
             </Row>
@@ -870,7 +899,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             <Row title="Cursor MCP" description={<span data-selectable>{`Add to mcp.json: "command": "/path/to/Murmur.app/.../murmur", "args": ["--mcp"]`}</span>}>
               <Switch id="mcp" checked={c.mcp_enabled ?? false} onCheckedChange={(v) => save({ mcp_enabled: v })} />
             </Row>
-          </Section>
+          </More>
           </>
     ),
     about: (
@@ -889,7 +918,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     ),
   };
 
-  const groups = navGroups(a ? c.assistant_name : null);
+  // With the assistant off its panes have nothing to set; Shortcuts holds the switch.
+  const groups = navGroups(a && c.assistant_enabled ? c.assistant_name : null);
   const active = groups.flatMap((g) => g.items).find((i) => i.id === pane) ?? groups[0].items[0];
 
   return (
@@ -908,12 +938,13 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                     <button
                       type="button"
                       onClick={() => setPane(id)}
+                      aria-current={id === active.id ? "page" : undefined}
                       className={cn(
-                        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors",
+                        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         id === active.id ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
                       )}
                     >
-                      <Icon className="size-4 shrink-0 opacity-80" />
+                      <Icon aria-hidden className="size-4 shrink-0 opacity-80" />
                       {label}
                     </button>
                   </li>
