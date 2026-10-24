@@ -1187,10 +1187,38 @@ impl Assistant {
         });
     }
 
+    /// Installs the voice cloning engine in the background (progress arrives as
+    /// `download-progress` for "clone", and each step's name as `clone-step`).
+    pub fn install_clone(self: &Arc<Self>, engine: String) {
+        if self.shared.downloading("clone") {
+            return;
+        }
+        self.shared.download_progress("clone", Some(0.0));
+        let core = self.clone();
+        std::thread::spawn(move || {
+            let result = openvoice::install(&engine, |p, step| {
+                core.shared.download_progress("clone", Some(p));
+                let _ = core.app.emit_to("main", "clone-step", step);
+            });
+            core.shared.download_progress("clone", None);
+            match result {
+                Ok(()) => {
+                    mlog!("voice cloning ({engine}) installed");
+                    openvoice::set_engine(&engine);
+                    openvoice::unload();
+                }
+                Err(e) => {
+                    mlog!("voice cloning install failed: {e}");
+                    let _ = core.app.emit_to("main", "download-error", format!("Voice cloning: {e}"));
+                }
+            }
+        });
+    }
+
     /// Settings changed: point the AI and the voice at the new choices.
     pub fn configure(self: &Arc<Self>, old: &Config, new: &Config) {
         self.brain.configure(new);
-        let voice_changed = old.voice_engine != new.voice_engine || old.natural_voice != new.natural_voice;
+        let voice_changed = old.voice_engine != new.voice_engine || old.natural_voice != new.natural_voice || old.clone_engine != new.clone_engine;
         if voice_changed || old.voice != new.voice || old.speech_rate != new.speech_rate {
             self.speaker.configure(new);
         }

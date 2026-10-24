@@ -12,7 +12,7 @@ import { Panel } from "@/components/bits";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { api, type AppStyle, type Config, type DictationStyle, type Replacement, type Snippet, type Voice } from "@/lib/api";
+import { api, events, type AppStyle, type CloneEngine, type Config, type DictationStyle, type Replacement, type Snippet, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
 import { useBusy } from "@/hooks/use-busy";
 
@@ -415,14 +415,14 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                   <div key={i} className="flex items-center gap-2">
                     <Input
                       value={r.from}
-                      placeholder="Heard as…"
+                      placeholder="Heard as"
                       onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))}
                       onBlur={() => saveRepl(repl)}
                     />
                     <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
                     <Input
                       value={r.to}
-                      placeholder="Replace with…"
+                      placeholder="Replace with"
                       onChange={(e) => setRepl(repl.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))}
                       onBlur={() => saveRepl(repl)}
                     />
@@ -523,7 +523,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                     <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
                     <Input
                       value={s.text}
-                      placeholder="Expanded text…"
+                      placeholder="Expanded text"
                       onChange={(e) => setSnippets(snippets.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
                       onBlur={() => saveSnippets(snippets)}
                     />
@@ -633,7 +633,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 id="prompt"
                 rows={4}
                 value={prompt}
-                placeholder={`You are ${c.assistant_name}, a friendly assistant. Answer in one or two short sentences…`}
+                placeholder={`You are ${c.assistant_name}, a friendly assistant. Answer in one or two short sentences.`}
                 onChange={(e) => setPrompt(e.target.value)}
                 onBlur={() => (prompt.trim() || null) !== c.system_prompt && save({ system_prompt: prompt.trim() || null })}
               />
@@ -750,26 +750,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
                 <Row id="clone-consent" title="Voice cloning" description="Only clone your own voice or with permission. Processing stays on this Mac.">
                   <Switch id="clone-consent" checked={c.clone_consent ?? false} onCheckedChange={(v) => save({ clone_consent: v })} />
                 </Row>
-                <Row id="clone-engine" title="Cloning engine" description={<>Runs with Python on this Mac. Chatterbox: <code>pip install chatterbox-tts</code>; F5-TTS: <code>pip install f5-tts</code>; OpenVoice: <code>pip install openvoice-v2 melotts</code>.</>}>
-                  <Choice
-                    id="clone-engine"
-                    className="w-56"
-                    value={c.clone_engine ?? "chatterbox"}
-                    options={[["chatterbox", "Chatterbox (best, Hindi too)"], ["f5", "F5-TTS (English)"], ["openvoice", "OpenVoice (lightest)"]]}
-                    onChange={(v) => save({ clone_engine: v })}
-                  />
-                </Row>
-                <Row id="clone-record" title="Record sample" description="Speak naturally for about 20 seconds in a quiet room.">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!c.clone_consent || busy !== null}
-                    onClick={() => run("clone", () => api.recordCloneSample(20), "Couldn't save the sample: ")}
-                  >
-                    {busy === "clone" ? <Loader2 className="animate-spin" /> : null}
-                    Record 20 s
-                  </Button>
-                </Row>
+                <CloneVoice config={c} save={save} progress={state.downloads.clone} />
               </>
             ) : (
               <>
@@ -997,3 +978,133 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     </div>
   );
 }
+
+/** Read aloud while recording: varied sounds make a better voice sample. */
+const SAMPLE_TEXT =
+  "I'm recording this so my assistant can answer in my own voice. The quick brown fox jumps over the lazy dog. Later today I want to check my calendar, read the news, and plan a weekend trip with a few friends.";
+const SAMPLE_SECONDS = 20;
+
+/** Custom clone: install the engine, record a sample with a countdown, and hear the result. */
+function CloneVoice({ config: c, save, progress }: { config: Config; save: (patch: Partial<Config>) => void; progress: number | undefined }) {
+  const engine: CloneEngine = c.clone_engine === "f5" ? "f5" : "chatterbox";
+  const installing = progress != null;
+  const [ready, setReady] = useState<boolean | null>(null);
+  const [sample, setSample] = useState(false);
+  const [step, setStep] = useState("");
+  const [left, setLeft] = useState<number | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    api.cloneEngineReady(engine).then(setReady, () => setReady(false));
+  }, [engine, installing]);
+  useEffect(() => {
+    api.cloneProfileReady().then(setSample, () => {});
+    const un = events.cloneStep(setStep);
+    return () => {
+      un.then((u) => u());
+    };
+  }, []);
+
+  async function record() {
+    const started = Date.now();
+    setLeft(SAMPLE_SECONDS);
+    const tick = window.setInterval(() => setLeft(Math.max(0, SAMPLE_SECONDS - (Date.now() - started) / 1000)), 100);
+    try {
+      await api.recordCloneSample(SAMPLE_SECONDS);
+      setSample(true);
+      toast.success("Voice sample saved");
+    } catch (e) {
+      toast.error(`Couldn't save the sample: ${e}`);
+    } finally {
+      window.clearInterval(tick);
+      setLeft(null);
+    }
+  }
+
+  async function test() {
+    setTesting(true);
+    try {
+      await api.previewVoice("cloned", c.assistant_name, c.speech_rate);
+    } catch (e) {
+      toast.error(`Couldn't play your voice: ${e}`);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const recording = left !== null;
+  return (
+    <>
+      <Row
+        stack={installing}
+        id="clone-engine"
+        title="Cloning engine"
+        description={
+          ready
+            ? "Installed on this Mac."
+            : "Runs on this Mac. Installs once in the background (about 3 GB with its voice model); until then answers use the macOS voice."
+        }
+      >
+        {installing ? (
+          <div role="status" className="flex flex-col gap-2">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5"><Loader2 className="size-3.5 animate-spin" /> {step || "Starting"}</span>
+              <span className="tabular-nums">{Math.round((progress ?? 0) * 100)}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} />
+            </div>
+            <p className="text-xs text-muted-foreground">You can close Settings; it keeps going.</p>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Choice
+              id="clone-engine"
+              className="w-56"
+              value={engine}
+              options={[["chatterbox", "Chatterbox (best, Hindi too)"], ["f5", "F5-TTS (English)"]]}
+              onChange={(v) => save({ clone_engine: v })}
+            />
+            {ready === false && (
+              <Button size="sm" onClick={() => api.installVoiceClone(engine).catch((e) => toast.error(`Couldn't start the install: ${e}`))}>
+                Install
+              </Button>
+            )}
+          </div>
+        )}
+      </Row>
+      <Row
+        stack={recording}
+        id="clone-record"
+        title="Your voice sample"
+        description={recording ? "Read this out loud, at your normal pace:" : sample ? "Saved. Record again any time in a quiet room." : `Takes ${SAMPLE_SECONDS} seconds. You'll get a short paragraph to read.`}
+      >
+        {recording ? (
+          <div className="flex flex-col gap-3">
+            <p data-selectable className="rounded-lg bg-muted px-4 py-3 text-[15px] leading-relaxed">{SAMPLE_TEXT}</p>
+            <div className="flex items-center gap-3">
+              <span className="relative flex size-2.5 shrink-0">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-destructive/60" />
+                <span className="relative inline-flex size-2.5 rounded-full bg-destructive" />
+              </span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Recording time left" aria-valuemin={0} aria-valuemax={SAMPLE_SECONDS} aria-valuenow={Math.ceil(left)}>
+                <div className="h-full rounded-full bg-destructive transition-[width] duration-100 ease-linear" style={{ width: `${(left / SAMPLE_SECONDS) * 100}%` }} />
+              </div>
+              <span className="w-12 text-right text-sm font-medium tabular-nums">{Math.ceil(left)} s</span>
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" disabled={!c.clone_consent} onClick={record}>
+            {sample ? "Record again" : `Record ${SAMPLE_SECONDS} s`}
+          </Button>
+        )}
+      </Row>
+      <Row id="clone-test" title="Hear it" description={ready && sample ? `${c.assistant_name} says a sentence in your voice. The first time takes a little longer while it loads.` : "Install the engine and record a sample first."}>
+        <Button size="sm" variant="outline" disabled={!ready || !sample || testing} onClick={test}>
+          {testing ? <Loader2 className="animate-spin" /> : <Play />} Play
+        </Button>
+      </Row>
+    </>
+  );
+}
+

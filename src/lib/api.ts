@@ -77,7 +77,7 @@ export interface Config {
   /** "system" (macOS voices) or "natural" (Kokoro, an AI voice that runs on the Mac). */
   voice_engine: "system" | "natural" | "cloned";
   cloned_voice_id: string | null;
-  clone_engine?: "chatterbox" | "f5" | "openvoice";
+  clone_engine?: CloneEngine;
   clone_consent: boolean;
   http_enabled: boolean;
   http_port: number;
@@ -139,8 +139,9 @@ export interface ModelInfo {
   engine: "whisper" | "parakeet" | string;
 }
 
-export type DownloadKey = "speech" | "brain" | "natural";
+export type DownloadKey = "speech" | "brain" | "natural" | "clone";
 export type StatusKind = "ready" | "busy" | "attention";
+export type CloneEngine = "chatterbox" | "f5" | "openvoice";
 
 export interface AppState {
   config: Config;
@@ -251,6 +252,9 @@ export const api = {
   previewVoice: (engine: Config["voice_engine"], voice: string, rate: number) => invoke<void>("preview_voice", { engine, voice, rate }),
   recordCloneSample: (seconds?: number) => invoke<void>("record_clone_sample", { seconds }),
   cloneProfileReady: () => invoke<boolean>("clone_profile_ready"),
+  /** Installs the cloning engine in the background; progress comes as download-progress "clone". */
+  installVoiceClone: (engine: CloneEngine) => invoke<void>("install_voice_clone", { engine }),
+  cloneEngineReady: (engine: CloneEngine) => invoke<boolean>("clone_engine_ready", { engine }),
   stop: () => invoke<void>("stop_speaking"),
   ask: (question: string) => invoke<void>("ask_text", { question }),
   newConversation: () => invoke<void>("new_conversation"),
@@ -266,6 +270,8 @@ export const events = {
   downloadProgress: (cb: (p: { model: DownloadKey; progress: number | null }) => void) =>
     listen<{ model: DownloadKey; progress: number | null }>("download-progress", (e) => cb(e.payload)),
   downloadError: (cb: (message: string) => void) => listen<string>("download-error", (e) => cb(e.payload)),
+  /** The voice cloning install's current step ("Setting up Python"). */
+  cloneStep: (cb: (step: string) => void) => listen<string>("clone-step", (e) => cb(e.payload)),
   // Assistant
   reply: (cb: (r: Reply) => void) => listen<Reply>("reply", (e) => cb(e.payload)),
   replyError: (cb: (message: string) => void) => listen<string>("reply-error", (e) => cb(e.payload)),

@@ -219,7 +219,7 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
               }
             }}
             rows={1}
-            placeholder={`Ask ${name} anything…`}
+            placeholder={`Ask ${name} anything`}
             className="max-h-32 min-h-10 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
           {busy ? (

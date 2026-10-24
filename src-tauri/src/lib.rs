@@ -863,6 +863,8 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke<Wry>) -> bool + Send + Sync + 'stati
         commands::confirm_answer,
         commands::record_clone_sample,
         commands::clone_profile_ready,
+        commands::install_voice_clone,
+        commands::clone_engine_ready,
     ]
 }
 
@@ -927,8 +929,8 @@ pub fn run() {
 
             use tauri_plugin_autostart::ManagerExt;
             let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-            let open_item = MenuItem::with_id(app, "open", "Open Murmur…", true, Some("CmdOrCtrl+,"))?;
-            let history_item = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
+            let open_item = MenuItem::with_id(app, "open", "Open Murmur", true, Some("CmdOrCtrl+,"))?;
+            let history_item = MenuItem::with_id(app, "history", "History", true, None::<&str>)?;
             let copy_last = MenuItem::with_id(app, "copy_last", "Copy Last Dictation", true, None::<&str>)?;
             let login_enabled = app.autolaunch().is_enabled().unwrap_or(false);
             let login_item = CheckMenuItem::with_id(app, "login", "Start at Login", true, login_enabled, None::<&str>)?;

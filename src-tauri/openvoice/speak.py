@@ -3,10 +3,11 @@
 per line on stdin ({"ref", "text", "out"}) and answers each with one JSON line ({"ok": true} or
 {"error": "..."}). Each answer is a WAV at "out" in the voice of the reference sample.
 
-Engines (--engine), each its own pip install:
-  chatterbox  pip install chatterbox-tts             (default; 23 languages incl. Hindi, MIT)
-  f5          pip install f5-tts                     (high quality English/Chinese, slower start)
-  openvoice   pip install openvoice-v2 melotts       (+ checkpoints_v2 in $MURMUR_OPENVOICE_CKPT)
+Engines (--engine). Murmur installs chatterbox and f5 itself (Settings → Voice → Install), into
+its own Python under voice-clone/ in its data folder; openvoice is for manual setups:
+  chatterbox  chatterbox-tts             (default; 23 languages incl. Hindi, MIT)
+  f5          f5-tts                     (high quality English/Chinese, slower start)
+  openvoice   openvoice-v2 melotts       (+ checkpoints_v2 in $MURMUR_OPENVOICE_CKPT)
 Exit codes before serving: 2 package missing, 3 model files missing, 4 unknown engine.
 """
 
@@ -117,6 +118,7 @@ ENGINES = {"chatterbox": chatterbox, "f5": f5, "openvoice": openvoice}
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--engine", default="chatterbox")
+    p.add_argument("--prefetch", action="store_true", help="Load the engine (downloading its weights) and exit")
     args = p.parse_args()
     # Libraries print progress to stdout; keep it for replies only.
     replies, sys.stdout = sys.stdout, sys.stderr
@@ -128,6 +130,8 @@ def main() -> int:
     except Missing as e:
         print(e, file=sys.stderr)
         return e.code
+    if args.prefetch:
+        return 0
 
     for line in sys.stdin:
         try:

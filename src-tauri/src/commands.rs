@@ -198,9 +198,11 @@ pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
     let cfg = shared.cfg();
     let dir = config::data_dir();
     let downloads = shared.downloads.lock().unwrap().clone();
+    // One lock, released here: two guards in the struct literal below would deadlock.
+    let status = shared.status.lock().unwrap().clone();
     AppState {
-        status: shared.status.lock().unwrap().1.clone(),
-        status_kind: shared.status.lock().unwrap().0,
+        status: status.1,
+        status_kind: status.0,
         model_loaded: shared.model_loaded(),
         model_progress: downloads.get("speech").copied(),
         downloads,
@@ -645,6 +647,19 @@ pub fn record_clone_sample(shared: State<'_, Arc<Shared>>, seconds: Option<u32>)
     let rec = rec.map_err(|e| e.to_string())?;
     openvoice::save_reference(openvoice::DEFAULT_VOICE_ID, &rec.samples).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Sets up the voice cloning engine in the background (see `Assistant::install_clone`).
+#[cfg(target_os = "macos")]
+#[tauri::command(async)]
+pub fn install_voice_clone(assistant: State<'_, Arc<Assistant>>, engine: String) {
+    assistant.inner().install_clone(engine);
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command(async)]
+pub fn clone_engine_ready(engine: String) -> bool {
+    crate::assistant::openvoice::engine_ready(&engine)
 }
 
 #[cfg(target_os = "macos")]

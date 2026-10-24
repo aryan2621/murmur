@@ -99,7 +99,7 @@ export default function Home({ app, goTo }: { app: ReturnType<typeof useAppState
           ref={notesRef}
           value={notes}
           onChange={(e) => updateNotes(e.target.value)}
-          placeholder="Start talking…"
+          placeholder="Start talking"
           className="min-h-40 resize-y rounded-none border-0 bg-transparent px-5 py-4 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
         <div className="flex items-center justify-between border-t px-3 py-2">

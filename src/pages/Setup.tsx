@@ -652,7 +652,7 @@ function AskIt({ app, keyLabel, name, onBack, onNext }: { app: ReturnType<typeof
           )}
         </div>
         <div className="flex gap-2 border-t px-3 py-3">
-          <Input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="Or type a question…" className="border-0 shadow-none focus-visible:ring-0" />
+          <Input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="Or type a question" className="border-0 shadow-none focus-visible:ring-0" />
           <Button size="icon" onClick={ask} disabled={!draft.trim() || answering} aria-label="Ask">
             {answering ? <Loader2 className="animate-spin" /> : <ArrowRight />}
           </Button>

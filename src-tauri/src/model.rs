@@ -229,7 +229,7 @@ pub fn ensure_brain(dir: &Path, id: &str, progress: impl Fn(u64, u64)) -> Result
 
 /// Downloads `url` to `path` unless it's already there. Writes to a `.part` file first, so an
 /// interrupted download never looks finished.
-fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
+pub(crate) fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
