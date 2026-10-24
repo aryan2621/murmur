@@ -5,7 +5,7 @@ import { BarChart3, History as HistoryIcon, Home as HomeIcon, Mic, Settings as S
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Kbd } from "@/components/bits";
-import { api, events, keyLabel } from "@/lib/api";
+import { api, events, keyLabel, type StatusKind } from "@/lib/api";
 import { useAppState } from "@/hooks/use-app";
 import { cn, focusedField, insertAtCursor } from "@/lib/utils";
 import Home from "@/pages/Home";
@@ -31,11 +31,11 @@ const tabFromHash = (): Page => {
   return isTab(t) ? t : "home";
 };
 
-function statusTone(status: string) {
-  if (status.startsWith("Ready") || status.startsWith("In conversation")) return "bg-emerald-500 shadow-[0_0_0_3px] shadow-emerald-500/20";
-  if (/Allow|Grant|failed|isn't|Ollama|Download/i.test(status)) return "bg-amber-500 shadow-[0_0_0_3px] shadow-amber-500/20";
-  return "bg-primary animate-pulse";
-}
+const STATUS_TONE: Record<StatusKind, string> = {
+  ready: "bg-emerald-500 shadow-[0_0_0_3px] shadow-emerald-500/20",
+  attention: "bg-amber-500 shadow-[0_0_0_3px] shadow-amber-500/20",
+  busy: "bg-primary animate-pulse",
+};
 
 export default function App() {
   const [tab, setTab] = useState<Page>(tabFromHash);
@@ -79,6 +79,7 @@ export default function App() {
   }, []);
 
   const status = app.state?.status ?? "Starting…";
+  const statusKind = app.state?.status_kind ?? "busy";
   const inSetup = !!app.state && (!app.state.config.setup_done || rerunSetup);
 
   // Dictation while Murmur is in front lands on Home's scratchpad or Setup's test box; on the
@@ -159,8 +160,8 @@ export default function App() {
 
               <div className="mt-auto rounded-xl border border-sidebar-border bg-card/70 p-3 shadow-hairline backdrop-blur">
                 <div role="status" aria-live="polite" className="flex items-start gap-2.5">
-                  <span aria-hidden className={cn("mt-[5px] size-2 shrink-0 rounded-full", statusTone(status))} />
-                  <span className="text-xs leading-snug font-medium text-foreground/85">{status.startsWith("Ready") ? "Ready to listen" : status}</span>
+                  <span aria-hidden className={cn("mt-[5px] size-2 shrink-0 rounded-full", STATUS_TONE[statusKind])} />
+                  <span className="text-xs leading-snug font-medium text-foreground/85">{statusKind === "ready" && status.startsWith("Ready") ? "Ready to listen" : status}</span>
                 </div>
                 <div className="mt-2.5 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5 border-t border-sidebar-border pt-2.5 text-xs text-muted-foreground">
                   <span className="flex"><Kbd>{key}</Kbd></span> <span>hold to dictate</span>

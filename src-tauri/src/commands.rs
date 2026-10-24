@@ -122,6 +122,7 @@ pub struct AssistantState {
 pub struct AppState {
     config: Config,
     status: String,
+    status_kind: crate::Status,
     model_loaded: bool,
     /// Download progress (0–1) while the speech model is downloading.
     model_progress: Option<f32>,
@@ -198,7 +199,8 @@ pub fn get_state(app: AppHandle, shared: State<'_, Arc<Shared>>) -> AppState {
     let dir = config::data_dir();
     let downloads = shared.downloads.lock().unwrap().clone();
     AppState {
-        status: shared.status.lock().unwrap().clone(),
+        status: shared.status.lock().unwrap().1.clone(),
+        status_kind: shared.status.lock().unwrap().0,
         model_loaded: shared.model_loaded(),
         model_progress: downloads.get("speech").copied(),
         downloads,

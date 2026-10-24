@@ -140,10 +140,13 @@ export interface ModelInfo {
 }
 
 export type DownloadKey = "speech" | "brain" | "natural";
+export type StatusKind = "ready" | "busy" | "attention";
 
 export interface AppState {
   config: Config;
   status: string;
+  /** What the status means: listening, working, or waiting on the user. */
+  status_kind: StatusKind;
   model_loaded: boolean;
   /** 0–1 while the speech model downloads, otherwise null. */
   model_progress: number | null;
@@ -256,7 +259,7 @@ export const api = {
 };
 
 export const events = {
-  status: (cb: (s: string) => void): Promise<UnlistenFn> => listen<string>("status", (e) => cb(e.payload)),
+  status: (cb: (s: { kind: StatusKind; text: string }) => void): Promise<UnlistenFn> => listen<{ kind: StatusKind; text: string }>("status", (e) => cb(e.payload)),
   historyUpdated: (cb: () => void) => listen("history-updated", () => cb()),
   navigate: (cb: (tab: string) => void) => listen<string>("navigate", (e) => cb(e.payload)),
   dictation: (cb: (text: string) => void) => listen<string>("dictation", (e) => cb(e.payload)),

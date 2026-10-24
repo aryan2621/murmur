@@ -8,9 +8,9 @@ export function useAppState() {
 
   useEffect(() => {
     refresh();
-    const unStatus = events.status((status) => {
-      setState((s) => (s ? { ...s, status } : s));
-      if (status.startsWith("Ready")) refresh();
+    const unStatus = events.status(({ kind, text }) => {
+      setState((s) => (s ? { ...s, status: text, status_kind: kind } : s));
+      if (kind === "ready") refresh();
     });
     // Download progress (speech and AI models), so every page shows it live.
     const unProgress = events.downloadProgress(({ model, progress }) => {

@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Panel } from "@/components/bits";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { api, type AppStyle, type Config, type DictationStyle, type Replacement, type Snippet, type Voice } from "@/lib/api";
 import type { useAppState } from "@/hooks/use-app";
@@ -171,6 +172,8 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const { busy, run } = useBusy();
   // Settings still being saved and applied (some restart a model).
   const [saving, setSaving] = useState(false);
+  /** A key change waiting for the OK to restart Murmur (the key tap is set up once). */
+  const [pendingKeys, setPendingKeys] = useState<Partial<Config> | null>(null);
   // Only say so when it takes a moment, so quick saves don't flash.
   const [showSaving, setShowSaving] = useState(false);
   useEffect(() => {
@@ -248,7 +251,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
   const off = (
     <Section>
       <Row id="assistant-off" title={`${c.assistant_name} is turned off`} description="Turn the assistant on to set its AI, voice and conversation.">
-        <Switch id="assistant-off" checked={false} onCheckedChange={(v) => save({ assistant_enabled: v })} />
+        <Switch id="assistant-off" checked={false} onCheckedChange={(v) => setPendingKeys({ assistant_enabled: v })} />
       </Row>
     </Section>
   );
@@ -256,7 +259,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
     shortcuts: (
           <Section>
             <Row id="hotkey" title="Dictation key" description="Hold to talk, double-tap for hands-free. Changing a key restarts Murmur.">
-              <Select value={c.hotkey} onValueChange={(v) => save({ hotkey: v })}>
+              <Select value={c.hotkey} onValueChange={(v) => setPendingKeys({ hotkey: v })}>
                 <SelectTrigger id="hotkey" className="w-52"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {state.hotkeys.map((h) => (
@@ -267,12 +270,12 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             </Row>
             {a && (
               <Row id="assistant" title={`${c.assistant_name}, the assistant`} description="Ask out loud and hear the answer; it can also act on this Mac. Off: its key does nothing and no AI is loaded.">
-                <Switch id="assistant" checked={c.assistant_enabled} onCheckedChange={(v) => save({ assistant_enabled: v })} />
+                <Switch id="assistant" checked={c.assistant_enabled} onCheckedChange={(v) => setPendingKeys({ assistant_enabled: v })} />
               </Row>
             )}
             {a && c.assistant_enabled && (
               <Row id="ask-key" title="Assistant key" description="Hold for a quick question, tap for a conversation.">
-                <Select value={c.assistant_hotkey} onValueChange={(v) => save({ assistant_hotkey: v })}>
+                <Select value={c.assistant_hotkey} onValueChange={(v) => setPendingKeys({ assistant_hotkey: v })}>
                   <SelectTrigger id="ask-key" className="w-52"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {state.hotkeys.map((h) => (
@@ -284,7 +287,7 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
             )}
             {a && (
               <Row id="command-key" title="Command key" description="Select text, hold this key and say “make it shorter”. With nothing selected, it writes what you ask for. Uses the local AI.">
-                <Select value={c.command_hotkey || "off"} onValueChange={(v) => save({ command_hotkey: v === "off" ? "" : v })}>
+                <Select value={c.command_hotkey || "off"} onValueChange={(v) => setPendingKeys({ command_hotkey: v === "off" ? "" : v })}>
                   <SelectTrigger id="command-key" className="w-52"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="off">Off</SelectItem>
@@ -924,6 +927,27 @@ function SettingsPanel({ app, pane, setPane, onRunSetup }: { app: ReturnType<typ
 
   return (
     <div className="flex min-h-0 flex-1">
+      <AlertDialog open={pendingKeys !== null} onOpenChange={(open) => !open && setPendingKeys(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart Murmur?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingKeys?.assistant_enabled === undefined ? "The new key works after Murmur restarts." : `Turning ${c.assistant_name} ${pendingKeys.assistant_enabled ? "on" : "off"} needs a restart.`} It takes a few seconds; anything you're dictating right now stops.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Not now</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingKeys) save(pendingKeys);
+                setPendingKeys(null);
+              }}
+            >
+              Restart
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar">
         <div className="px-5 pt-5 pb-3">
           <DialogTitle className="text-xl">Settings</DialogTitle>

@@ -9,7 +9,7 @@ import { ChartColumn, Table2 } from "lucide-react";
 import { EmptyState, PageHeader, Panel } from "@/components/bits";
 import { useExchanges } from "@/assistant/use-exchanges";
 import { formatSeconds, type Exchange } from "@/lib/api";
-import { DAY, medianResponseMs, questionsPerDay } from "@/assistant/metrics";
+import { DAY, medianResponseMs, questionsPerDay, streak } from "@/assistant/metrics";
 
 type Range = "7" | "30" | "all";
 
@@ -124,6 +124,7 @@ export default function AssistantInsights() {
   const { entries } = useExchanges("", 100_000);
   const [range, setRange] = useState<Range>("30");
   const d = useInsights(entries ?? [], range);
+  const days = useMemo(() => streak(entries ?? []), [entries]);
 
   return (
     <>
@@ -145,10 +146,11 @@ export default function AssistantInsights() {
         </Panel>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <Hero value={d.count.toLocaleString()} label="Questions" hint="asked in this period" />
             <Hero value={d.median ? formatSeconds(d.median) : "–"} label="Response time" hint="median, last word → first word" />
             <Hero value={`${Math.round(d.conversationShare * 100)}%`} label="In conversations" hint="the rest were quick questions or typed" />
+            <Hero value={days.toString()} label={days === 1 ? "Day in a row" : "Days in a row"} hint="with at least one question" />
           </div>
 
           <ChartPanel title="Questions per day" description="Everything you asked, day by day." table={{ head: ["Day", "Questions"], rows: d.perDay.map((p) => [p.label, p.value]) }}>

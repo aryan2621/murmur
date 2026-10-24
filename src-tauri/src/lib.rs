@@ -34,6 +34,18 @@ mod voice;
 mod widget_drag;
 
 #[cfg(target_os = "macos")]
+/// What the status line means, so the app can colour it without reading the words.
+#[derive(Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// Listening for the keys (or in a conversation).
+    Ready,
+    /// Starting, loading or downloading.
+    Busy,
+    /// Needs the user: a permission, a failed download, an error.
+    Attention,
+}
+
 use assistant::Assistant;
 use audio::Recorder;
 use config::Config;
@@ -80,8 +92,8 @@ pub struct Shared {
     /// Download progress (0–1) of the speech ("speech") and AI ("brain") models, while downloading.
     downloads: Mutex<HashMap<&'static str, f32>>,
     status_item: MenuItem<Wry>,
-    /// Same text as the menu bar status line, for the app window.
-    status: Mutex<String>,
+    /// Same text as the menu bar status line, for the app window, and what kind of state it is.
+    status: Mutex<(Status, String)>,
     /// Bumped every time the widget is shown, so a hide scheduled earlier can tell it's stale.
     widget_shown: AtomicU64,
 }
@@ -91,23 +103,23 @@ impl Shared {
         self.cfg.read().unwrap().clone()
     }
 
-    fn set_status(&self, text: &str) {
+    fn set_status(&self, kind: Status, text: &str) {
         let _ = self.status_item.set_text(text);
-        *self.status.lock().unwrap() = text.to_string();
-        let _ = self.app.emit_to("main", "status", text);
+        *self.status.lock().unwrap() = (kind, text.to_string());
+        let _ = self.app.emit_to("main", "status", serde_json::json!({ "kind": kind, "text": text }));
     }
 
     fn ready_status(&self) {
         if !paste::has_permission(false) {
-            self.set_status("Allow Murmur in Privacy & Security → Accessibility");
+            self.set_status(Status::Attention, "Allow Murmur in Privacy & Security → Accessibility");
             return;
         }
         let cfg = self.cfg();
         let dictate = key_label(&cfg.hotkey);
         if cfg!(target_os = "macos") && cfg.assistant_enabled {
-            self.set_status(&format!("Ready — hold {dictate} to dictate, {} to ask", key_label(&cfg.assistant_hotkey)));
+            self.set_status(Status::Ready, &format!("Ready — hold {dictate} to dictate, {} to ask", key_label(&cfg.assistant_hotkey)));
         } else {
-            self.set_status(&format!("Ready — hold {dictate} to dictate"));
+            self.set_status(Status::Ready, &format!("Ready — hold {dictate} to dictate"));
         }
     }
 
@@ -303,7 +315,7 @@ impl Shared {
         }
         let path = stt::ensure_model(engine, name, &dir, |done, total| {
             let pct = if total > 0 { done as f32 / total as f32 } else { 0.0 };
-            self.set_status(&format!("Downloading speech model… {:.0}%", pct * 100.0));
+            self.set_status(Status::Busy, &format!("Downloading speech model… {:.0}%", pct * 100.0));
             self.download_progress("speech", Some(pct));
             if widget {
                 self.emit_widget("downloading", Some(format!("Downloading model {:.0}%", pct * 100.0)), Some(pct));
@@ -314,7 +326,7 @@ impl Shared {
             Ok(p) => p,
             Err(e) => {
                 self.loading.store(false, Ordering::SeqCst);
-                self.set_status("Model download failed — pick the model again in Settings to retry");
+                self.set_status(Status::Attention, "Model download failed — pick the model again in Settings to retry");
                 let _ = self.app.emit_to("main", "download-error", format!("Speech model: {e}"));
                 if self.cfg().setup_done {
                     self.fail(&format!("Download failed: {e}"));
@@ -322,7 +334,7 @@ impl Shared {
                 return;
             }
         };
-        self.set_status("Loading speech model…");
+        self.set_status(Status::Busy, "Loading speech model…");
         let started = Instant::now();
         match SttBackend::load(engine, &path) {
             Ok(t) => {
@@ -340,7 +352,7 @@ impl Shared {
             }
             Err(e) => {
                 self.loading.store(false, Ordering::SeqCst);
-                self.set_status("Model failed to load");
+                self.set_status(Status::Attention, "Model failed to load");
                 self.fail(&format!("Model load failed: {e}"));
             }
         }
@@ -456,7 +468,7 @@ impl Murmur {
                 Ok(()) => return,
                 Err(e) => {
                     mlog!("hotkey: {e}");
-                    self.shared.set_status("Grant Input Monitoring in System Settings → Privacy");
+                    self.shared.set_status(Status::Attention, "Grant Input Monitoring in System Settings → Privacy");
                     std::thread::sleep(Duration::from_secs(3));
                 }
             }
@@ -992,7 +1004,7 @@ pub fn run() {
                 last_used: Mutex::new(Instant::now()),
                 downloads: Mutex::new(HashMap::new()),
                 status_item: status,
-                status: Mutex::new("Starting…".into()),
+                status: Mutex::new((Status::Busy, "Starting…".into())),
                 widget_shown: AtomicU64::new(0),
             });
             let murmur = Arc::new(Murmur {
@@ -1014,7 +1026,7 @@ pub fn run() {
                 if c.assistant_enabled { "on" } else { "off" }
             );
             if !trusted {
-                shared.set_status("Allow Murmur in Privacy & Security → Accessibility");
+                shared.set_status(Status::Attention, "Allow Murmur in Privacy & Security → Accessibility");
                 // Relaunch once permission is granted so the keys can be intercepted.
                 let handle = app.handle().clone();
                 std::thread::spawn(move || loop {
@@ -1035,7 +1047,7 @@ pub fn run() {
             }
 
             if wait_for_setup {
-                shared.set_status("Finish setup to download the speech model");
+                shared.set_status(Status::Attention, "Finish setup to download the speech model");
             } else {
                 let s = shared.clone();
                 std::thread::spawn(move || s.load_model());

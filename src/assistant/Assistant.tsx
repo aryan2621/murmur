@@ -1,23 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Area, AreaChart, XAxis } from "recharts";
-import { ArrowRight, ArrowUp, Download, Gauge, Loader2, MessageSquarePlus, ShieldAlert, Sparkles, Square } from "lucide-react";
+import { ArrowRight, ArrowUp, Download, Loader2, MessageSquarePlus, ShieldAlert, Sparkles, Square } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
 import { Textarea } from "@/components/ui/textarea";
 import { ExchangeRow } from "@/assistant/exchange-row";
 import { EmptyState, Kbd, PageHeader, Panel, SectionTitle } from "@/components/bits";
-import { api, events, formatSeconds, keyLabel, type Reply } from "@/lib/api";
+import { api, events, keyLabel, type Reply } from "@/lib/api";
 import { setView } from "@/lib/view";
-import { medianResponseMs, questionsPerDay, streak } from "@/assistant/metrics";
+import { questionsPerDay } from "@/assistant/metrics";
 import type { useAppState } from "@/hooks/use-app";
 import { useBusy } from "@/hooks/use-busy";
 import { useExchanges } from "@/assistant/use-exchanges";
 import { cn } from "@/lib/utils";
 import type { Tab } from "@/App";
 
-const spark: ChartConfig = { value: { label: "Questions", color: "var(--chart-1)" } };
 
 /** The assistant's page: ask by typing, see the live answer, and recent questions. */
 export default function Assistant({ app, goTo }: { app: ReturnType<typeof useAppState>; goTo: (t: Tab) => void }) {
@@ -36,10 +33,8 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
   const brainProgress = s?.downloads.brain;
   const { busy: acting, run } = useBusy();
 
-  const week = useMemo(() => questionsPerDay(entries ?? [], 7), [entries]);
-  const days = useMemo(() => streak(entries ?? []), [entries]);
-  const speed = useMemo(() => medianResponseMs((entries ?? []).slice(0, 50)), [entries]);
-  const today = week.at(-1)?.value ?? 0;
+  const today = useMemo(() => questionsPerDay(entries ?? [], 1).at(-1)?.value ?? 0, [entries]);
+  const brainLabel = s && a ? (usesOllama ? s.config.llm_model : a.brain_label) : null;
 
   // Answers stream in here whether they were spoken, held or typed.
   useEffect(() => {
@@ -85,7 +80,12 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
     <>
       <PageHeader
         title={<>{name}<span className="text-primary">.</span></>}
-        description={<>Hold <Kbd>{key}</Kbd> to ask a quick question, tap it for a conversation. It answers out loud and can act on this Mac.</>}
+        description={
+          <>
+            Hold <Kbd>{key}</Kbd> to ask a quick question, tap it for a conversation. It answers out loud and can act on this Mac.
+            {brainLabel && <> Runs on {brainLabel} · {today ? `${today} question${today === 1 ? "" : "s"} today` : "no questions yet today"}.</>}
+          </>
+        }
       />
 
       {perms && !perms.accessibility && (
@@ -166,55 +166,6 @@ export default function Assistant({ app, goTo }: { app: ReturnType<typeof useApp
           </AlertAction>
         </Alert>
       )}
-
-      {/* Hero: today's questions with a 7-day sparkline, and how fast answers come back. */}
-      <div className="grid grid-cols-[1.65fr_1fr] gap-4">
-        <div className="relative overflow-hidden rounded-2xl bg-lavender p-6 text-lavender-foreground">
-          <div className="text-xs font-medium tracking-wide uppercase opacity-90">Today</div>
-          <div className="mt-2 font-display text-[76px] leading-[0.85] tracking-[-0.03em] tabular-nums">{today.toLocaleString()}</div>
-          <div className="mt-2 text-sm opacity-80">
-            question{today === 1 ? "" : "s"} asked
-            {days > 1 && <span className="opacity-80"> · {days}-day streak</span>}
-          </div>
-          <ChartContainer config={spark} className="mt-4 aspect-auto h-20 w-full">
-            <AreaChart data={week} margin={{ left: 2, right: 2, top: 4, bottom: 0 }}>
-              <defs>
-                <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--color-value)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="weekday" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "currentColor", opacity: 0.9 }} interval={0} padding={{ left: 14, right: 14 }} />
-              <ChartTooltip
-                cursor={{ stroke: "currentColor", strokeOpacity: 0.25 }}
-                content={({ active, payload }) => {
-                  const p = active && payload?.[0]?.payload;
-                  return p ? (
-                    <div className="rounded-lg border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md">
-                      <span className="font-medium">{p.value} question{p.value === 1 ? "" : "s"}</span> · {p.label}
-                    </div>
-                  ) : null;
-                }}
-              />
-              <Area dataKey="value" type="monotone" stroke="var(--color-value)" strokeWidth={2} fill="url(#spark-fill)" dot={false} activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--lavender)" }} />
-            </AreaChart>
-          </ChartContainer>
-        </div>
-
-        <div className="flex flex-col justify-between rounded-2xl bg-forest p-6 text-forest-foreground">
-          <div className="flex items-center gap-2 text-xs font-medium tracking-wide uppercase opacity-75">
-            <Gauge className="size-3.5" /> Response time
-          </div>
-          <div>
-            <div className="font-display text-[64px] leading-[0.85] tracking-[-0.03em] tabular-nums">{speed ? formatSeconds(speed) : "–"}</div>
-            <div className="mt-1.5 text-sm opacity-80">from your last word to its first</div>
-          </div>
-          <div className="border-t border-white/15 pt-3 text-xs">
-            <span className="font-display text-2xl leading-none">{s && a ? (usesOllama ? s.config.llm_model : a.brain_label) : "–"}</span>
-            <span className="ml-2 opacity-70">on this Mac</span>
-          </div>
-        </div>
-      </div>
 
       <SectionTitle
         action={

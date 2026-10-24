@@ -85,7 +85,7 @@ if (mockStep) localStorage.setItem("murmur.setupStep", mockStep);
 const fresh = new URLSearchParams(location.search).has("fresh");
 
 const state = (): AppState => ({
-  config, status: fresh ? "Finish setup to download the speech model" : "Ready — hold Fn to dictate, Right ⌥ to ask", model_loaded: !fresh,
+  config, status: fresh ? "Finish setup to download the speech model" : "Ready — hold Fn to dictate, Right ⌥ to ask", status_kind: fresh ? "attention" : "ready", model_loaded: !fresh,
   // `?setup=2&fresh&dl=0.4` previews the download progress bar.
   model_progress: new URLSearchParams(location.search).has("dl") ? Number(new URLSearchParams(location.search).get("dl")) : null,
   downloads: new URLSearchParams(location.search).has("dl") ? { brain: Number(new URLSearchParams(location.search).get("dl")) } : {},

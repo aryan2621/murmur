@@ -361,8 +361,8 @@ impl Assistant {
         self.shared.cfg()
     }
 
-    fn set_status(&self, text: &str) {
-        self.shared.set_status(text);
+    fn set_status(&self, kind: crate::Status, text: &str) {
+        self.shared.set_status(kind, text);
     }
 
     fn ready_status(&self) {
@@ -635,7 +635,7 @@ impl Assistant {
         self.show_widget();
         self.play("Tink");
         self.watch_mic();
-        self.set_status(&format!("In conversation — tap {} to send now, Esc to end", key_label(&self.cfg().assistant_hotkey)));
+        self.set_status(crate::Status::Ready, &format!("In conversation — tap {} to send now, Esc to end", key_label(&self.cfg().assistant_hotkey)));
     }
 
     /// Conversation mode: runs the speech detector on the new audio a few times a second and
@@ -1109,7 +1109,7 @@ impl Assistant {
                 Ok(()) => mlog!("AI ready ({} ms)", started.elapsed().as_millis()),
                 Err(e) => {
                     mlog!("AI: {e}");
-                    core.set_status(&e.to_string());
+                    core.set_status(crate::Status::Attention, &e.to_string());
                     // Try again on the next press.
                     *core.last_warm_up.lock().unwrap() = None;
                 }
